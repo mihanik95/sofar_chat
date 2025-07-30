@@ -1,0 +1,6 @@
+Target dependency graph (3 targets)
+Target 'SOFAR - VST3' in project 'SOFAR'
+➜ Explicit dependency on target 'SOFAR - Shared Code' in project 'SOFAR'
+➜ Explicit dependency on target 'SOFAR - VST3 Manifest Helper' in project 'SOFAR'
+Target 'SOFAR - VST3 Manifest Helper' in project 'SOFAR' (no dependencies)
+Target 'SOFAR - Shared Code' in project 'SOFAR' (no dependencies)
