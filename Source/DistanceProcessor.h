@@ -39,7 +39,7 @@ public:
 
     //==============================================================================
     DistanceProcessor();
-    ~DistanceProcessor();
+    ~DistanceProcessor() = default;
 
     //==============================================================================
     void prepare(double sampleRate, int samplesPerBlock);
