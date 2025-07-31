@@ -320,6 +320,21 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
 
         // Skip heavy convolution/reverb when extremely far or in huge rooms
         const bool heavyLoad = (effectiveDistance > 30.0f || currentRoomLength > 50.0f);
+
+        // In heavy-load scenarios use a simplified path to avoid CPU spikes
+        if (heavyLoad)
+        {
+            if (trueGainEnabled)
+                processDistanceGain(buffer, effectiveDistance, numSamples);
+
+            smoothedPan.setTargetValue(panValue);
+            processPanning(buffer, panValue, numSamples);
+
+            processAirAbsorption(buffer, effectiveDistance, numSamples);
+            // lightweight height cues still apply
+            processHeightEffects(buffer, numSamples);
+            return; // skip expensive processing
+        }
         
         // Height effects - always process for smooth height movement
         processHeightEffects(buffer, numSamples);
@@ -344,7 +359,6 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         
         // SAFE room width factor calculation
         const float safeRoomWidth = juce::jmax(2.0f, currentRoomWidth); // Safety minimum
-        const float roomWidthFactor = juce::jlimit(0.5f, 2.0f, safeRoomWidth / 6.0f); // 2m=0.17, 6m=1.0, 12m=2.0
         
         // FIXED: Safe stereo width calculation - no channel swapping
         float safeStereoWidth = 1.0f;
@@ -364,6 +378,10 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         
         // CRITICAL: Safe bounds to prevent channel swapping
         safeStereoWidth = juce::jlimit(0.6f, 1.8f, safeStereoWidth); // NEVER below 0.6x
+
+        // Width effect should only be noticeable when panned off centre
+        const float lateralPanFactor = std::abs(std::sin(panRad));
+        safeStereoWidth = 1.0f + (safeStereoWidth - 1.0f) * lateralPanFactor;
         
         // SAFE M/S processing - Fixed channel swapping issue
         if (buffer.getNumChannels() >= 2 && std::abs(safeStereoWidth - 1.0f) > 0.05f)
@@ -951,7 +969,7 @@ void DistanceProcessor::processLateReverb(float distance, int numSamples, int ch
         }
         
         // ------------------------------------------------------------------
-        // Update early-reflection geometry for this block
+        // Update early-reflection geometry only when parameters change
         if (advancedReverb)
         {
             const float panDeg = smoothedPan.getCurrentValue();
@@ -961,8 +979,25 @@ void DistanceProcessor::processLateReverb(float distance, int numSamples, int ch
             const float srcZ = std::cos(panRad) * actualDistance; // front(+)
             const float srcY = currentHeightPercent * currentRoomHeight; // metres
 
-            advancedReverb->updateRoomGeometry(currentRoomWidth, currentRoomLength, currentRoomHeight,
-                                               srcX, srcY, srcZ);
+            const bool geometryChanged =
+                std::abs(currentRoomWidth  - lastGeomRoomWidth)  > 0.05f ||
+                std::abs(currentRoomLength - lastGeomRoomLength) > 0.05f ||
+                std::abs(currentRoomHeight - lastGeomRoomHeight) > 0.05f ||
+                std::abs(srcX - lastGeomSrcX) > 0.02f ||
+                std::abs(srcY - lastGeomSrcY) > 0.02f ||
+                std::abs(srcZ - lastGeomSrcZ) > 0.02f;
+
+            if (geometryChanged)
+            {
+                advancedReverb->updateRoomGeometry(currentRoomWidth, currentRoomLength, currentRoomHeight,
+                                                   srcX, srcY, srcZ);
+                lastGeomRoomWidth  = currentRoomWidth;
+                lastGeomRoomLength = currentRoomLength;
+                lastGeomRoomHeight = currentRoomHeight;
+                lastGeomSrcX = srcX;
+                lastGeomSrcY = srcY;
+                lastGeomSrcZ = srcZ;
+            }
         }
         
         // DearVR-style distance-dependent reverb characteristics

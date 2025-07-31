@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <limits>
 #include "AdvancedReverbEngine.h"
 #include "EarlyReflectionIR.h"
 #include "MySofaHRIR.h"
@@ -190,6 +191,14 @@ private:
     juce::dsp::Convolution hrtfLeft { juce::dsp::Convolution::NonUniform { 128 } };
     juce::dsp::Convolution hrtfRight{ juce::dsp::Convolution::NonUniform { 128 } };
     float lastAzimuthDeg = 0.0f, lastElevationDeg = 0.0f;
+
+    // Cache last geometry state to avoid expensive updates each block
+    float lastGeomRoomWidth  = -1.0f;
+    float lastGeomRoomLength = -1.0f;
+    float lastGeomRoomHeight = -1.0f;
+    float lastGeomSrcX       = std::numeric_limits<float>::infinity();
+    float lastGeomSrcY       = std::numeric_limits<float>::infinity();
+    float lastGeomSrcZ       = std::numeric_limits<float>::infinity();
 
     void updateHrirFilters(float azimuthDeg, float elevationDeg);
     void processHrtfConvolution(juce::AudioBuffer<float>& buffer);
