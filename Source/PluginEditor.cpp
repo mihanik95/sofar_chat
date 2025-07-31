@@ -33,7 +33,7 @@ SOFARAudioProcessorEditor::SOFARAudioProcessorEditor (SOFARAudioProcessor& p)
     addAndMakeVisible(titleLabel);
     
     // Version label
-    versionLabel.setText("v0.0086", juce::dontSendNotification);
+    versionLabel.setText("v0.0087", juce::dontSendNotification);
     versionLabel.setFont(juce::Font(18.0f, juce::Font::plain));
     versionLabel.setJustificationType(juce::Justification::centred);
     versionLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
