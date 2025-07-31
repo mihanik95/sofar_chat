@@ -599,6 +599,9 @@ void DistanceProcessor::processAirAbsorption(juce::AudioBuffer<float>& buffer, f
         if (actualDistance <= 0.0f)
         {
             smoothedCutoffFreq.setCurrentAndTargetValue(20000.0f);
+            lowPassFilterLeft.reset();
+            lowPassFilterRight.reset();
+            lastCutoffFreq = 20000.0f;
             return;
         }
  
@@ -606,6 +609,9 @@ void DistanceProcessor::processAirAbsorption(juce::AudioBuffer<float>& buffer, f
         if (currentAirAbsorption <= 0.0001f)
         {
             smoothedCutoffFreq.setCurrentAndTargetValue(20000.0f);
+            lowPassFilterLeft.reset();
+            lowPassFilterRight.reset();
+            lastCutoffFreq = 20000.0f;
             return; // Bypass filtering entirely
         }
  
@@ -1159,8 +1165,8 @@ void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, i
         const float roomHeightFactor = juce::jlimit(1.0f, 2.0f, roomHeight / 3.0f);
         
         const float tiltFreq = 800.0f;
-        const float baseTiltGain = clampedHeightDeviation * 10.0f;
-        const float dramaticTiltGain = juce::jlimit(-12.0f, 12.0f, baseTiltGain * roomHeightFactor);
+        const float baseTiltGain = std::tanh(clampedHeightDeviation * 1.2f) * 8.0f;
+        const float dramaticTiltGain = juce::jlimit(-10.0f, 10.0f, baseTiltGain * roomHeightFactor);
         
         // Smooth tilt gain changes
         smoothedTiltGain.setTargetValue(dramaticTiltGain);
@@ -1195,8 +1201,8 @@ void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, i
             }
         }
         
-        const float baseWidthFactor = 1.0f - clampedHeightDeviation * 0.5f;
-        const float dramaticWidthFactor = juce::jlimit(0.6f, 1.4f, baseWidthFactor * roomHeightFactor);
+        const float baseWidthFactor = 1.0f - clampedHeightDeviation * 0.4f;
+        const float dramaticWidthFactor = juce::jlimit(0.7f, 1.3f, baseWidthFactor * roomHeightFactor);
         
         smoothedHeightWidth.setTargetValue(dramaticWidthFactor);
         
