@@ -314,9 +314,12 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         
         // 7. APPLY SMOOTH SPATIAL PROCESSING
         // =================================
-        
+
         // Scale all effects by spatialProcessingAmount for smooth onset
         const float effectiveDistance = true3DDistance * perceptualDistanceFactor;
+
+        // Skip heavy convolution/reverb when extremely far or in huge rooms
+        const bool heavyLoad = (effectiveDistance > 30.0f || currentRoomLength > 50.0f);
         
         // Height effects - always process for smooth height movement
         processHeightEffects(buffer, numSamples);
@@ -363,21 +366,26 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         safeStereoWidth = juce::jlimit(0.6f, 1.8f, safeStereoWidth); // NEVER below 0.6x
         
         // SAFE M/S processing - Fixed channel swapping issue
-        if (buffer.getNumChannels() >= 2 && std::abs(safeStereoWidth - 1.0f) > 0.05f && spatialProcessingAmount > 0.1f) {
-            for (int n = 0; n < numSamples; ++n) {
-                const float leftSample = buffer.getSample(0, n);
+        if (buffer.getNumChannels() >= 2 && std::abs(safeStereoWidth - 1.0f) > 0.05f)
+        {
+            // Target width evolves with distance instead of collapsing to mono
+            const float targetWidth = 1.0f + (safeStereoWidth - 1.0f) * spatialProcessingAmount;
+            smoothedStereoWidth.setTargetValue(targetWidth);
+
+            for (int n = 0; n < numSamples; ++n)
+            {
+                const float leftSample  = buffer.getSample(0, n);
                 const float rightSample = buffer.getSample(1, n);
-                
-                const float midSample = (leftSample + rightSample) * 0.5f;
+
+                const float midSample  = (leftSample + rightSample) * 0.5f;
                 const float sideSample = (leftSample - rightSample) * 0.5f;
-                
-                // CRITICAL: Safe side processing - prevents channel swapping
-                const float processedSide = sideSample * safeStereoWidth * spatialProcessingAmount;
-                
-                // SAFE reconstruction with bounds checking
-                const float newLeft = juce::jlimit(-2.0f, 2.0f, midSample + processedSide);
+
+                const float widthValue = smoothedStereoWidth.getNextValue();
+                const float processedSide = sideSample * widthValue;
+
+                const float newLeft  = juce::jlimit(-2.0f, 2.0f, midSample + processedSide);
                 const float newRight = juce::jlimit(-2.0f, 2.0f, midSample - processedSide);
-                
+
                 buffer.setSample(0, n, newLeft);
                 buffer.setSample(1, n, newRight);
             }
@@ -393,17 +401,17 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         }
         
         // Early reflections with smooth scaling
-        if (spatialProcessingAmount > 0.1f) {
+        if (!heavyLoad && spatialProcessingAmount > 0.1f) {
             earlyReflections.process(buffer);
         }
         
         // ULTRA-SAFE REVERB PROCESSING - Fixed resonance issues
         // =====================================================
-        if (spatialProcessingAmount > 0.1f) {
+        if (!heavyLoad && spatialProcessingAmount > 0.1f) {
             // ULTRA-CONSERVATIVE reverb processing
             juce::AudioBuffer<float> cleanInput(buffer.getNumChannels(), numSamples);
             cleanInput.makeCopyOf(buffer, true);
-            
+
             tempBuffer.makeCopyOf(cleanInput, true);
             processLateReverb(effectiveDistance * spatialProcessingAmount, numSamples, buffer.getNumChannels());
             
@@ -429,7 +437,7 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         }
 
         // OPTIONAL: Final HRTF convolution with ultra-safe scaling
-        if (spatialProcessingAmount > 0.2f) {
+        if (!heavyLoad && spatialProcessingAmount > 0.2f) {
             juce::AudioBuffer<float> dryCopy(buffer);
             processHrtfConvolution(buffer);
 
@@ -1116,8 +1124,8 @@ void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, i
         const float roomHeightFactor = juce::jlimit(1.0f, 2.0f, roomHeight / 3.0f);
         
         const float tiltFreq = 800.0f;
-        const float baseTiltGain = clampedHeightDeviation * 6.0f;
-        const float dramaticTiltGain = juce::jlimit(-8.0f, 8.0f, baseTiltGain * roomHeightFactor);
+        const float baseTiltGain = clampedHeightDeviation * 10.0f;
+        const float dramaticTiltGain = juce::jlimit(-12.0f, 12.0f, baseTiltGain * roomHeightFactor);
         
         // Smooth tilt gain changes
         smoothedTiltGain.setTargetValue(dramaticTiltGain);
@@ -1152,15 +1160,15 @@ void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, i
             }
         }
         
-        const float baseWidthFactor = 1.0f + clampedHeightDeviation * -0.3f;
-        const float dramaticWidthFactor = juce::jlimit(0.7f, 1.3f, baseWidthFactor * roomHeightFactor);
+        const float baseWidthFactor = 1.0f - clampedHeightDeviation * 0.5f;
+        const float dramaticWidthFactor = juce::jlimit(0.6f, 1.4f, baseWidthFactor * roomHeightFactor);
         
         smoothedHeightWidth.setTargetValue(dramaticWidthFactor);
         
-        const float phaseShiftAmount = clampedHeightDeviation * 0.1f; // ±10% phase shift
+        const float phaseShiftAmount = clampedHeightDeviation * 0.15f; // ±15% phase shift
         const float phaseShiftRadians = phaseShiftAmount * juce::MathConstants<float>::pi;
         
-        const float heightGainModulation = 1.0f + clampedHeightDeviation * 0.02f;
+        const float heightGainModulation = 1.0f + clampedHeightDeviation * 0.05f;
         
         // Process height effects with dramatic changes
         for (int sample = 0; sample < numSamples; ++sample)
@@ -1398,33 +1406,18 @@ void DistanceProcessor::setVolumeCompensation(float compensation)
 void DistanceProcessor::setRoomWidth(float roomWidthMeters)
 {
     currentRoomWidth = juce::jlimit(2.0f, 100.0f, roomWidthMeters);
-    
+
     float widthFactor = juce::jlimit(0.5f, 1.5f, currentRoomWidth / 6.0f);
-    float stereoWidthMultiplier = juce::jlimit(0.8f, 1.2f, widthFactor);
-    
-    // REALISTIC ROOM WIDTH EFFECTS - Physics-based acoustic modeling
-    // Calculate realistic width factor based on room dimensions
-    // float widthFactor = juce::jlimit(0.2f, 2.0f, currentRoomWidth / 12.0f);
-    
-    // REALISTIC stereo width changes - narrow rooms narrow width, wide rooms preserve it
-    // Never expand beyond original stereo width (max 1.0x)
-    // float stereoWidthMultiplier = juce::jlimit(0.2f, 1.0f, widthFactor);
-    
+
     environmentSettings[currentEnvironment].diffusion = juce::jlimit(0.1f, 1.0f, widthFactor);
     environmentSettings[currentEnvironment].reverbLevel = juce::jlimit(0.05f, 0.5f, widthFactor * 0.2f);
-    
-    // Update reverb parameters if reverb is active
+
     if (advancedReverb)
     {
         advancedReverb->setDiffusion(environmentSettings[currentEnvironment].diffusion);
-        
-        advancedReverb->setWidth(juce::jlimit(0.8f, 1.2f, stereoWidthMultiplier));
         float earlyLevel = juce::jlimit(0.05f, 0.4f, widthFactor * 0.2f);
         advancedReverb->setEarlyLevel(earlyLevel);
     }
-    
-    // Update the stereo width processing multiplier for realistic effect
-    smoothedStereoWidth.setTargetValue(stereoWidthMultiplier);
 }
 
 void DistanceProcessor::setRoomHeight(float roomHeightMeters)
@@ -1435,14 +1428,14 @@ void DistanceProcessor::setRoomHeight(float roomHeightMeters)
 
     float roomSizeFactor = juce::jlimit(0.5f, 2.0f, heightFactor);
     environmentSettings[currentEnvironment].roomSize = roomSizeFactor;
-    
-    float decayTimeFactor = juce::jlimit(0.5f, 6.0f, heightFactor * 2.0f);
+
+    float decayTimeFactor = juce::jlimit(0.5f, 6.0f, heightFactor * 2.5f);
     environmentSettings[currentEnvironment].decayTime = decayTimeFactor;
     
     float heightReverbBoost = juce::jlimit(0.0f, 0.6f, (heightFactor - 0.5f) * 0.1f);
     environmentSettings[currentEnvironment].reverbLevel = juce::jmax(environmentSettings[currentEnvironment].reverbLevel, heightReverbBoost);
     
-    float preDelay = juce::jlimit(2.0f, 80.0f, currentRoomHeight * 5.0f);
+    float preDelay = juce::jlimit(2.0f, 80.0f, currentRoomHeight * 4.0f);
 
     float damping = juce::jlimit(0.2f, 0.8f, 1.0f - (heightFactor * 0.1f));
     environmentSettings[currentEnvironment].damping = damping;
@@ -1645,12 +1638,8 @@ void DistanceProcessor::processHrtfConvolution(juce::AudioBuffer<float>& buffer)
         const int delaySamples = static_cast<int>(crossfeedDelay * sampleRate);
         
         // Simple delay-based crosstalk cancellation
-        static juce::AudioBuffer<float> crossfeedBuffer;
-        if (crossfeedBuffer.getNumSamples() < delaySamples + buffer.getNumSamples())
-        {
-            crossfeedBuffer.setSize(2, delaySamples + buffer.getNumSamples());
-            crossfeedBuffer.clear();
-        }
+        juce::AudioBuffer<float> crossfeedBuffer(2, delaySamples + buffer.getNumSamples());
+        crossfeedBuffer.clear();
         
         const int numSamples = buffer.getNumSamples();
         
@@ -1679,16 +1668,6 @@ void DistanceProcessor::processHrtfConvolution(juce::AudioBuffer<float>& buffer)
             right[i] += left[i] * crossfeedAmount * 0.3f;
         }
         
-        // Shift crossfeed buffer for next block
-        if (crossfeedBuffer.getNumSamples() > numSamples)
-        {
-            for (int ch = 0; ch < 2; ++ch)
-            {
-                auto* bufferData = crossfeedBuffer.getWritePointer(ch);
-                std::memmove(bufferData, bufferData + numSamples, 
-                           (crossfeedBuffer.getNumSamples() - numSamples) * sizeof(float));
-            }
-        }
     }
 }
 
