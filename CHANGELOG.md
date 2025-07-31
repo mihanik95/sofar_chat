@@ -1,6 +1,11 @@
 # SOFAR Version History
 
-## Version 0.0087 (Current - Built 2025-01-30)
+## Version 0.0088 (Current - Built 2025-01-31)
+- Improved spatial processing stability and performance
+- Strengthened height and room controls
+- Fixed stereo width collapse at small distances
+
+## Version 0.0087 (Built 2025-01-30)
 - Updated plugin version to 0.0087 for recent fixes
 
 ## Version 0.0086 (Current - Built 2025-01-29)
