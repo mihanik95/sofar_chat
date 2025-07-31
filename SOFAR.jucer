@@ -9,7 +9,7 @@
               pluginIsSynth="0" pluginWantsMidiIn="0" pluginWantsMidiOut="0"
               pluginIsMidiEffectPlugin="0" pluginEditorRequiresKeys="0" pluginAUExportPrefix="SOFARAU"
               pluginRTASCategory="" bundleIdentifier="com.michealafanasyev.sofar" standaloneFilterWidth="400"
-              standaloneFilterHeight="300" version="0.0086" defines="JUCE_VST3_CAN_REPLACE_VST2=0&#10;JUCE_WEB_BROWSER=0&#10;JUCE_USE_CURL=0&#10;JUCE_JACK=0&#10;JUCE_ALSA=0">
+              standaloneFilterHeight="300" version="0.0087" defines="JUCE_VST3_CAN_REPLACE_VST2=0&#10;JUCE_WEB_BROWSER=0&#10;JUCE_USE_CURL=0&#10;JUCE_JACK=0&#10;JUCE_ALSA=0">
   <MAINGROUP id="C4vJD0" name="SOFAR">
     <GROUP id="{57B1EF15-B4EB-F49A-A8ED-8E948F40BC65}" name="Source">
       <FILE id="XuPtgk" name="PluginProcessor.cpp" compile="1" resource="0"
