@@ -3,32 +3,6 @@
 #include <cmath>
 #include <array>
 
-// Lightweight FOA encode/rotate/decode helpers -----------------------------
-namespace {
-    constexpr float kInvSqrt2 = 0.70710678f;
-
-    inline void encodeFOA(float mono, float azRad, float elRad,
-                          float &W, float &X, float &Y, float &Z)
-    {
-        W = kInvSqrt2 * mono;
-        const float cosEl = std::cos(elRad);
-        X = std::cos(azRad) * cosEl * mono;
-        Y = std::sin(azRad) * cosEl * mono;
-        Z = std::sin(elRad) * mono;
-    }
-
-    // Simple virtual loudspeaker decoder (down-mix) – not HRTF yet
-    inline void decodeFOAToStereo(float W, float X, float Y, float /*Z*/, float &L, float &R)
-    {
-        // Balanced Blumlein-style decoder:
-        //  • Front sources (X > 0) remain phantom-centre (equal L/R)
-        //  • Lateral Y component produces LR difference for left/right localisation
-        //  • X contributes equally to both channels for natural depth without bias
-        constexpr float kFOCoeff = 0.70710678f; // √½
-        L = W + kFOCoeff * X + kFOCoeff * Y;
-        R = W + kFOCoeff * X - kFOCoeff * Y;
-    }
-}
 // -------------------------------------------------------------------------
 
 DistanceProcessor::DistanceProcessor()
@@ -306,7 +280,6 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         
         // 5. ROOM SIZE PERCEPTION - Smooth scaling without hard thresholds
         const float roomVolume = currentRoomWidth * currentRoomLength * currentRoomHeight;
-        const float roomSizePerceptionFactor = juce::jlimit(0.5f, 3.0f, std::pow(roomVolume / 100.0f, 0.25f));
         
         // 6. SMOOTH DISTANCE PERCEPTION SCALING
         const float basePerceptualFactor = 1.0f + (roomDepth - 3.0f) * 0.15f; // Smooth scaling
