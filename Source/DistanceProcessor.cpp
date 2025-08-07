@@ -1105,17 +1105,20 @@ void DistanceProcessor::processLateReverb(float distance, int numSamples, int ch
             
             // CRITICAL: Apply conservative wet/dry mix to prevent buildup
             const float wetLevel = juce::jlimit(0.0f, 0.6f, distanceRatio * 0.4f + 0.05f); // Much more conservative
-            const float dryLevel = 1.0f - wetLevel * 0.3f; // Preserve more dry signal
-            
+
+            // Energy-preserving wet/dry gains
+            const float dryGain = std::sqrt(juce::jlimit(0.0f, 1.0f, 1.0f - wetLevel));
+            const float wetGain = std::sqrt(wetLevel);
+
             // CRITICAL: Safety limiting on reverb output
             leftOut = juce::jlimit(-1.0f, 1.0f, leftOut);
             rightOut = juce::jlimit(-1.0f, 1.0f, rightOut);
-            
-            // Store mixed output with safe levels
-            leftChannel[sample] = leftIn * dryLevel + leftOut * wetLevel;
+
+            // Store mixed output with safe levels using energy-preserving mix
+            leftChannel[sample] = leftIn * dryGain + leftOut * wetGain;
             if (rightChannel)
-                rightChannel[sample] = rightIn * dryLevel + rightOut * wetLevel;
-                
+                rightChannel[sample] = rightIn * dryGain + rightOut * wetGain;
+
             // Final safety limiting per sample
             leftChannel[sample] = juce::jlimit(-1.5f, 1.5f, leftChannel[sample]);
             if (rightChannel)
