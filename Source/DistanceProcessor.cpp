@@ -312,18 +312,18 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         // Height effects - always process for smooth height movement
         processHeightEffects(buffer, numSamples);
         
-        // Delay effect with smooth scaling
-        if (trueDelayEnabled && spatialProcessingAmount > 0.01f) {
+        // Delay effect with smooth scaling - engage immediately with tiny threshold
+        if (trueDelayEnabled && spatialProcessingAmount > 0.001f) {
             processDelayEffect(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
         }
-        
-        // Distance gain with smooth scaling
-        if (trueGainEnabled && spatialProcessingAmount > 0.01f) {
+
+        // Distance gain with smooth scaling - engage immediately with tiny threshold
+        if (trueGainEnabled && spatialProcessingAmount > 0.001f) {
             processDistanceGain(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
         }
-        
-        // Air absorption with smooth scaling
-        if (spatialProcessingAmount > 0.01f) {
+
+        // Air absorption with smooth scaling - engage immediately with tiny threshold
+        if (spatialProcessingAmount > 0.001f) {
             processAirAbsorption(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
         }
         
@@ -333,12 +333,12 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         // Clamp to a realistic range to avoid extreme values
         const float safeRoomWidth = juce::jlimit(2.0f, 100.0f, currentRoomWidth);
 
-        // Map room width (2m..20m) to stereo width (0.6x..1.8x) with linear interpolation
+        // Map room width (2m..20m) to stereo width (0.6x..1.5x) with linear interpolation
         const float widthNorm = juce::jlimit(0.0f, 1.0f, (safeRoomWidth - 2.0f) / 18.0f);
-        float safeStereoWidth = 0.6f + widthNorm * 1.2f;
+        float safeStereoWidth = 0.6f + widthNorm * 0.9f;
 
         // Ensure bounds for safety
-        safeStereoWidth = juce::jlimit(0.6f, 1.8f, safeStereoWidth);
+        safeStereoWidth = juce::jlimit(0.6f, 1.5f, safeStereoWidth);
 
         // Width effect should only be noticeable when panned off centre
         const float lateralPanFactor = std::abs(std::sin(panRad));
@@ -362,11 +362,16 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
                 const float widthValue = smoothedStereoWidth.getNextValue();
                 const float processedSide = sideSample * widthValue;
 
-                // Normalise output to avoid perceived loudness changes
-                const float norm = 1.0f / juce::jmax(1.0f, std::sqrt((widthValue * widthValue + 1.0f) * 0.5f));
+                float newLeft  = midSample + processedSide;
+                float newRight = midSample - processedSide;
 
-                const float newLeft  = juce::jlimit(-2.0f, 2.0f, (midSample + processedSide) * norm);
-                const float newRight = juce::jlimit(-2.0f, 2.0f, (midSample - processedSide) * norm);
+                // Maintain RMS level to avoid overall loudness changes
+                const float inRms  = std::sqrt((leftSample * leftSample + rightSample * rightSample) * 0.5f);
+                const float outRms = std::sqrt((newLeft * newLeft + newRight * newRight) * 0.5f);
+                const float norm   = (outRms > 0.000001f) ? juce::jmin(1.0f, inRms / outRms) : 1.0f;
+
+                newLeft  = juce::jlimit(-2.0f, 2.0f, newLeft * norm);
+                newRight = juce::jlimit(-2.0f, 2.0f, newRight * norm);
 
                 buffer.setSample(0, n, newLeft);
                 buffer.setSample(1, n, newRight);
@@ -377,8 +382,8 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         smoothedPan.setTargetValue(panValue);
         processPanning(buffer, panValue, numSamples);
         
-        // Psychoacoustic effects with smooth scaling
-        if (spatialProcessingAmount > 0.01f) {
+        // Psychoacoustic effects with smooth scaling - engage immediately
+        if (spatialProcessingAmount > 0.001f) {
             processPsychoacousticEffects(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
         }
         
