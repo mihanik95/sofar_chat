@@ -327,36 +327,24 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
             processAirAbsorption(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
         }
         
-        // FIXED ROOM WIDTH PERCEPTION - No more channel swapping
+        // ROOM WIDTH PERCEPTION - smooth and continuous
         // =====================================================
-        
-        // SAFE room width factor calculation
-        const float safeRoomWidth = juce::jmax(2.0f, currentRoomWidth); // Safety minimum
-        
-        // FIXED: Safe stereo width calculation - no channel swapping
-        float safeStereoWidth = 1.0f;
-        
-        if (safeRoomWidth < 4.0f) {
-            // Small rooms: SAFE narrowing (never below 0.6x)
-            safeStereoWidth = 0.6f + (safeRoomWidth / 4.0f) * 0.4f; // 0.6x to 1.0x - NO CHANNEL SWAPPING
-        }
-        else if (safeRoomWidth < 8.0f) {
-            // Medium rooms: gentle expansion
-            safeStereoWidth = 1.0f + ((safeRoomWidth - 4.0f) / 4.0f) * 0.3f; // 1.0x to 1.3x
-        }
-        else {
-            // Large rooms: moderate expansion
-            safeStereoWidth = 1.3f + ((safeRoomWidth - 8.0f) / 4.0f) * 0.4f; // 1.3x to 1.7x
-        }
-        
-        // CRITICAL: Safe bounds to prevent channel swapping
-        safeStereoWidth = juce::jlimit(0.6f, 1.8f, safeStereoWidth); // NEVER below 0.6x
+
+        // Clamp to a realistic range to avoid extreme values
+        const float safeRoomWidth = juce::jlimit(2.0f, 100.0f, currentRoomWidth);
+
+        // Map room width (2m..20m) to stereo width (0.6x..1.8x) with linear interpolation
+        const float widthNorm = juce::jlimit(0.0f, 1.0f, (safeRoomWidth - 2.0f) / 18.0f);
+        float safeStereoWidth = 0.6f + widthNorm * 1.2f;
+
+        // Ensure bounds for safety
+        safeStereoWidth = juce::jlimit(0.6f, 1.8f, safeStereoWidth);
 
         // Width effect should only be noticeable when panned off centre
         const float lateralPanFactor = std::abs(std::sin(panRad));
         safeStereoWidth = 1.0f + (safeStereoWidth - 1.0f) * lateralPanFactor;
         
-        // SAFE M/S processing - Fixed channel swapping issue
+        // SAFE M/S processing - smooth width without channel swapping
         if (buffer.getNumChannels() >= 2 && std::abs(safeStereoWidth - 1.0f) > 0.05f)
         {
             // Target width evolves with distance instead of collapsing to mono
@@ -725,16 +713,22 @@ void DistanceProcessor::processPanning(juce::AudioBuffer<float>& buffer, float p
         // ROOM-CONSTRAINED PANNING LIMITS
         // In small rooms, extreme panning feels more dramatic
         // In large rooms, same pan angle feels less dramatic
-        float roomConstrainedPan = panValue;
-        if (currentRoomWidth < 4.0f) {
-            // Small rooms: compress panning range but make it feel more dramatic
-            roomConstrainedPan = panValue * 0.7f; // Compress range
-        } else if (currentRoomWidth > 10.0f) {
-            // Large rooms: expand panning range for more dramatic movement
-            roomConstrainedPan = panValue * 1.3f; // Expand range
-            roomConstrainedPan = juce::jlimit(-180.0f, 180.0f, roomConstrainedPan); // Keep in bounds
+        float panScale = 1.0f;
+        if (currentRoomWidth <= 10.0f)
+        {
+            // 2m..10m -> 0.7x..1.0x
+            const float t = juce::jlimit(0.0f, 1.0f, (currentRoomWidth - 2.0f) / 8.0f);
+            panScale = 0.7f + t * 0.3f;
         }
-        
+        else
+        {
+            // 10m..20m+ -> 1.0x..1.3x
+            const float t = juce::jlimit(0.0f, 1.0f, (currentRoomWidth - 10.0f) / 10.0f);
+            panScale = 1.0f + t * 0.3f;
+        }
+
+        float roomConstrainedPan = juce::jlimit(-180.0f, 180.0f, panValue * panScale);
+
         const float roomAwareAzRad = roomConstrainedPan * juce::MathConstants<float>::pi / 180.0f;
 
         // SMOOTH FRONT/BACK DISTINCTION with room awareness
