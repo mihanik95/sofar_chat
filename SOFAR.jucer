@@ -24,10 +24,6 @@
             file="Source/DistanceProcessor.cpp"/>
       <FILE id="D7mWvP" name="DistanceProcessor.h" compile="0" resource="0"
             file="Source/DistanceProcessor.h"/>
-      <FILE id="E9oZxF" name="AdvancedReverbEngine.cpp" compile="1" resource="0"
-            file="Source/AdvancedReverbEngine.cpp"/>
-      <FILE id="F8pYxE" name="AdvancedReverbEngine.h" compile="0" resource="0"
-            file="Source/AdvancedReverbEngine.h"/>
       <FILE id="G9qRtY" name="EarlyReflectionIR.h" compile="0" resource="0"
             file="Source/EarlyReflectionIR.h"/>
       <FILE id="H8sQuZ" name="MySofaHRIR.h" compile="0" resource="0"
