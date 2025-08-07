@@ -747,8 +747,12 @@ void AdvancedReverbEngine::processStereo(float leftInput, float rightInput, floa
     {
         const float mid  = 0.5f * (wetL + wetR);
         const float side = 0.5f * (wetL - wetR) * width;
-        wetL = mid + side;
-        wetR = mid - side;
+
+        // Prevent width changes from altering perceived loudness
+        const float norm = 1.0f / juce::jmax(1.0f, std::sqrt((width * width + 1.0f) * 0.5f));
+
+        wetL = (mid + side) * norm;
+        wetR = (mid - side) * norm;
     }
 
     // 8.  Optional high-cut on wet path
