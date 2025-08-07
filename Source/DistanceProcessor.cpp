@@ -221,229 +221,29 @@ void DistanceProcessor::processBlock(juce::AudioBuffer<float>& buffer, float dis
 
 void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer, float distance, float panValue, int numSamples)
 {
-    try {
-        // PERFECT TRANSPARENCY - Completely fixed 0% to 1% jump
-        // =====================================================
-        
-        // Create smooth distance factor relative to the current room size
-        const float distanceFactor = juce::jlimit(0.0f, 1.0f,
-                                                 currentMaxDistance > 0.0f
-                                                     ? distance / currentMaxDistance
-                                                     : 0.0f);
+    try
+    {
+        const float az = juce::degreesToRadians(panValue);
+        const float x  = std::sin(az) * distance * (currentRoomWidth * 0.5f);
+        const float y  = std::cos(az) * distance * currentRoomLength;
+        const float z  = currentHeightPercent * currentRoomHeight;
+        const float trueDist = std::sqrt(x * x + y * y + (z - listenerEarHeight) * (z - listenerEarHeight));
 
-        // CRITICAL: At exact zero distance, do nothing but basic panning
-        if (distanceFactor <= 0.0f) {
-            // Only basic equal-power panning - no spatial processing at all
-            if (buffer.getNumChannels() >= 2) {
-                const float azRad = panValue * juce::MathConstants<float>::pi / 180.0f;
-                const float panNorm = juce::jlimit(-1.0f, 1.0f, std::sin(azRad));
-                
-                const float gainL = std::sqrt(0.5f * (1.0f - panNorm));
-                const float gainR = std::sqrt(0.5f * (1.0f + panNorm));
-                
-                auto* left = buffer.getWritePointer(0);
-                auto* right = buffer.getWritePointer(1);
-                for (int n = 0; n < numSamples; ++n) {
-                    const float leftSample = left[n] * gainL;
-                    const float rightSample = right[n] * gainR;
-                    left[n] = leftSample;
-                    right[n] = rightSample;
-                }
-            }
-            return; // EXIT - no spatial processing whatsoever
-        }
-        
-        // Scale all spatial processing directly with the distance factor
-        const float spatialProcessingAmount = distanceFactor;
-        
-        // ROOM-CONNECTED SPATIAL PROCESSING with smooth scaling
-        // ====================================================
-        
-        // 1. ROOM-SCALED DISTANCE - Smooth scaling by room size
-        const float roomDepth = juce::jmax(1.0f, currentRoomLength); // Minimum 1m to avoid division by zero
-        const float actualDistanceMeters = distanceFactor * roomDepth; // 0-1 maps to 0-roomDepth meters
-        
-        // 2. ROOM-CONSTRAINED PANNING - Smooth panning with room boundaries
-        const float panRad = panValue * juce::MathConstants<float>::pi / 180.0f;
-        const float maxLateralDistance = juce::jmax(0.5f, currentRoomWidth * 0.5f); // Minimum 0.5m
-        const float lateralDistanceMeters = std::sin(panRad) * maxLateralDistance;
-        const float absoluteLateralDistance = std::abs(lateralDistanceMeters);
-        
-        // 3. ROOM-SCALED HEIGHT - Smooth height scaling
-        const float sourceHeightMeters = currentHeightPercent * juce::jmax(2.0f, currentRoomHeight); // Minimum 2m
-        const float verticalOffsetMeters = sourceHeightMeters - DistanceProcessor::listenerEarHeight;
-        
-        // 4. SMOOTH 3D POSITION CALCULATION
-        const float true3DDistance = std::sqrt(actualDistanceMeters * actualDistanceMeters + 
-                                              absoluteLateralDistance * absoluteLateralDistance + 
-                                              verticalOffsetMeters * verticalOffsetMeters);
-        
-        // 5. ROOM SIZE PERCEPTION - Smooth scaling without hard thresholds
-        const float roomVolume = currentRoomWidth * currentRoomLength * currentRoomHeight;
-        
-        // 6. SMOOTH DISTANCE PERCEPTION SCALING
-        const float basePerceptualFactor = 1.0f + (roomDepth - 3.0f) * 0.15f; // Smooth scaling
-        const float perceptualDistanceFactor = juce::jlimit(0.5f, 2.5f, basePerceptualFactor);
-        
-        // 7. APPLY SMOOTH SPATIAL PROCESSING
-        // =================================
+        if (trueDelayEnabled)
+            processDelayEffect(buffer, trueDist, numSamples);
 
-        // Scale all effects by spatialProcessingAmount for smooth onset
-        const float effectiveDistance = true3DDistance * perceptualDistanceFactor;
+        processDistanceGain(buffer, trueDist, numSamples);
+        processAirAbsorption(buffer, trueDist, numSamples);
 
-        // Skip heavy convolution/reverb when extremely far or in huge rooms
-        const bool heavyLoad = (effectiveDistance > 30.0f || currentRoomLength > 50.0f);
-
-        // In heavy-load scenarios use a simplified path to avoid CPU spikes
-        if (heavyLoad)
-        {
-            if (trueGainEnabled)
-                processDistanceGain(buffer, effectiveDistance, numSamples);
-
-            smoothedPan.setTargetValue(panValue);
-            processPanning(buffer, panValue, numSamples);
-
-            processAirAbsorption(buffer, effectiveDistance, numSamples);
-            // lightweight height cues still apply
-            processHeightEffects(buffer, numSamples);
-            return; // skip expensive processing
-        }
-        
-        // Height effects - always process for smooth height movement
-        processHeightEffects(buffer, numSamples);
-        
-        // Delay effect with smooth scaling - engage immediately with tiny threshold
-        if (trueDelayEnabled && spatialProcessingAmount > 0.001f) {
-            processDelayEffect(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
-        }
-
-        // Distance gain with smooth scaling - engage immediately with tiny threshold
-        if (trueGainEnabled && spatialProcessingAmount > 0.001f) {
-            processDistanceGain(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
-        }
-
-        // Air absorption with smooth scaling - engage immediately with tiny threshold
-        if (spatialProcessingAmount > 0.001f) {
-            processAirAbsorption(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
-        }
-        
-        // ROOM WIDTH PERCEPTION - smooth and continuous
-        // =====================================================
-
-        // Clamp to a realistic range to avoid extreme values
-        const float safeRoomWidth = juce::jlimit(2.0f, 100.0f, currentRoomWidth);
-
-        // Map room width (2m..20m) to stereo width (0.6x..1.5x) with linear interpolation
-        const float widthNorm = juce::jlimit(0.0f, 1.0f, (safeRoomWidth - 2.0f) / 18.0f);
-        float safeStereoWidth = 0.6f + widthNorm * 0.9f;
-
-        // Ensure bounds for safety
-        safeStereoWidth = juce::jlimit(0.6f, 1.5f, safeStereoWidth);
-
-        // Width effect should only be noticeable when panned off centre
-        const float lateralPanFactor = std::abs(std::sin(panRad));
-        safeStereoWidth = 1.0f + (safeStereoWidth - 1.0f) * lateralPanFactor;
-        
-        // SAFE M/S processing - smooth width without channel swapping
-        if (buffer.getNumChannels() >= 2 && std::abs(safeStereoWidth - 1.0f) > 0.05f)
-        {
-            // Target width evolves with distance instead of collapsing to mono
-            const float targetWidth = 1.0f + (safeStereoWidth - 1.0f) * spatialProcessingAmount;
-            smoothedStereoWidth.setTargetValue(targetWidth);
-
-            for (int n = 0; n < numSamples; ++n)
-            {
-                const float leftSample  = buffer.getSample(0, n);
-                const float rightSample = buffer.getSample(1, n);
-
-                const float midSample  = (leftSample + rightSample) * 0.5f;
-                const float sideSample = (leftSample - rightSample) * 0.5f;
-
-                const float widthValue = smoothedStereoWidth.getNextValue();
-                const float processedSide = sideSample * widthValue;
-
-                float newLeft  = midSample + processedSide;
-                float newRight = midSample - processedSide;
-
-                // Maintain RMS level to avoid overall loudness changes
-                const float inRms  = std::sqrt((leftSample * leftSample + rightSample * rightSample) * 0.5f);
-                const float outRms = std::sqrt((newLeft * newLeft + newRight * newRight) * 0.5f);
-                const float norm   = (outRms > 0.000001f) ? juce::jmin(1.0f, inRms / outRms) : 1.0f;
-
-                newLeft  = juce::jlimit(-2.0f, 2.0f, newLeft * norm);
-                newRight = juce::jlimit(-2.0f, 2.0f, newRight * norm);
-
-                buffer.setSample(0, n, newLeft);
-                buffer.setSample(1, n, newRight);
-            }
-        }
-        
-        // SAFE ROOM-CONNECTED PANNING - Improved artifact elimination
         smoothedPan.setTargetValue(panValue);
         processPanning(buffer, panValue, numSamples);
-        
-        // Psychoacoustic effects with smooth scaling - engage immediately
-        if (spatialProcessingAmount > 0.001f) {
-            processPsychoacousticEffects(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
-        }
-        
-        // Early reflections with smooth scaling
-        if (!heavyLoad && spatialProcessingAmount > 0.1f) {
-            earlyReflections.process(buffer);
-        }
-        
-        // ULTRA-SAFE REVERB PROCESSING - Fixed resonance issues
-        // =====================================================
-        if (!heavyLoad && spatialProcessingAmount > 0.1f) {
-            // ULTRA-CONSERVATIVE reverb processing
-            juce::AudioBuffer<float> cleanInput(buffer.getNumChannels(), numSamples);
-            cleanInput.makeCopyOf(buffer, true);
 
-            tempBuffer.makeCopyOf(cleanInput, true);
-            processLateReverb(effectiveDistance * spatialProcessingAmount, numSamples, buffer.getNumChannels());
-            
-            // ULTRA-CONSERVATIVE blend - prevent any resonance
-            const float ultraSafeReverbMix = juce::jlimit(0.0f, 0.1f, spatialProcessingAmount * 0.08f); // Max 8%
-            
-            for (int channel = 0; channel < buffer.getNumChannels() && channel < tempBuffer.getNumChannels(); ++channel) {
-                auto* output = buffer.getWritePointer(channel);
-                const auto* original = cleanInput.getReadPointer(channel);
-                const auto* reverb = tempBuffer.getReadPointer(channel);
-                
-                for (int n = 0; n < numSamples; ++n) {
-                    const float originalSample = original[n];
-                    const float reverbSample = juce::jlimit(-1.0f, 1.0f, reverb[n]); // Limit reverb
-                    
-                    // Ultra-conservative blend
-                    output[n] = originalSample * (1.0f - ultraSafeReverbMix) + reverbSample * ultraSafeReverbMix;
-                    
-                    // Ultra-safe limiting
-                    output[n] = juce::jlimit(-1.2f, 1.2f, output[n]);
-                }
-            }
-        }
-
-        // OPTIONAL: Final HRTF convolution with ultra-safe scaling
-        if (!heavyLoad && spatialProcessingAmount > 0.2f) {
-            juce::AudioBuffer<float> dryCopy(buffer);
-            processHrtfConvolution(buffer);
-
-            // Ultra-conservative HRTF blend
-            const float ultraSafeHrtfAmount = spatialProcessingAmount * 0.3f; // Max 30%
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
-                float* wet = buffer.getWritePointer(ch);
-                const float* dry = dryCopy.getReadPointer(ch);
-                for (int n = 0; n < numSamples; ++n) {
-                    wet[n] = wet[n] * ultraSafeHrtfAmount + dry[n] * (1.0f - ultraSafeHrtfAmount);
-                    wet[n] = juce::jlimit(-1.2f, 1.2f, wet[n]); // Final safety limiting
-                }
-            }
-        }
-        
+        processHeightEffects(buffer, numSamples);
+        processHrtfConvolution(buffer);
     }
-    catch (const std::exception& e) {
+    catch (const std::exception& e)
+    {
         juce::Logger::writeToLog("processDistanceEffects error: " + juce::String(e.what()));
-        // Clear buffer on error to prevent artifacts
         buffer.clear();
     }
 }
