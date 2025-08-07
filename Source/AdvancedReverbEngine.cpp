@@ -326,7 +326,7 @@ void EarlyReflectionsEngine::processStereo(float leftInput, float rightInput, fl
 
         // Simple left/right panning based on stored position
         const float pan = panPositions[i]; // -1 = left, +1 = right
-        const float gain = gains[i] * level;
+        const float gain = gains[i] * level; // apply level once
         const float gL = gain * (pan <= 0.0f ? 1.0f : crossfeed);
         const float gR = gain * (pan >= 0.0f ? 1.0f : crossfeed);
 
@@ -396,7 +396,7 @@ void EarlyReflectionsEngine::configureGeometry(float roomW, float roomL, float r
         hfDamping = juce::jlimit(0.3f, 1.0f, hfDamping);
         
         delayTimes[tap] = delaySec;
-        gains[tap] = gain * level * hfDamping;
+        gains[tap] = gain * hfDamping;
         
         // Realistic panning based on actual position
         float azimuth = std::atan2(dx, dz) * 180.0f / juce::MathConstants<float>::pi;
@@ -450,7 +450,7 @@ void EarlyReflectionsEngine::configureGeometry(float roomW, float roomL, float r
         float pan = (rand01(rng) - 0.5f) * 2.0f; // -1 to +1
         
         delayTimes[tap] = delay;
-        gains[tap] = gain * level;
+        gains[tap] = gain;
         panPositions[tap] = pan;
         delayLines[tap].setDelay(static_cast<float>(delay * sampleRate));
         ++tap;
