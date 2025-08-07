@@ -699,248 +699,36 @@ void DistanceProcessor::processStereoWidth(juce::AudioBuffer<float>& buffer, flo
 void DistanceProcessor::processPanning(juce::AudioBuffer<float>& buffer, float panValue, int numSamples)
 {
     try {
-        if (buffer.getNumChannels() < 2) return;
+        if (buffer.getNumChannels() < 2)
+            return;
 
-        // ROOM-AWARE PANNING - Panning feels connected to actual room dimensions
         const float azRad = panValue * juce::MathConstants<float>::pi / 180.0f;
-
-        // Keep HRIR filters current for later binaural convolution
         const float elDeg = (currentHeightPercent - 0.5f) * 60.0f;
-        updateHrirFilters (panValue, elDeg);
+        updateHrirFilters(panValue, elDeg);
 
-        // ROOM BOUNDARY AWARENESS - Calculate position relative to room walls
-        const float maxLateralDistance = currentRoomWidth * 0.5f; // Half room width from center
-        const float lateralPosition = std::sin(azRad) * maxLateralDistance; // -roomWidth/2 to +roomWidth/2
-        const float distanceToLeftWall = maxLateralDistance + lateralPosition; // 0 to roomWidth
-        const float distanceToRightWall = maxLateralDistance - lateralPosition; // 0 to roomWidth
-        const float closestWallDistance = juce::jmin(distanceToLeftWall, distanceToRightWall);
-        
-        // ROOM SIZE PERCEPTION - Larger rooms feel more spacious
-        const float roomSizeFactor = juce::jlimit(0.5f, 2.5f, currentRoomWidth / 6.0f); // 6m = reference room width
-        
-        // WALL PROXIMITY EFFECTS - Sources very close to walls sound different
-        float wallProximityFactor = 1.0f;
-        if (closestWallDistance < 1.0f) {
-            wallProximityFactor = 0.5f + (closestWallDistance / 1.0f) * 0.5f; // 0.5x to 1.0x stereo width near walls
-        }
-        
-        // ROOM-CONSTRAINED PANNING LIMITS
-        // In small rooms, extreme panning feels more dramatic
-        // In large rooms, same pan angle feels less dramatic
-        float panScale = 1.0f;
-        if (currentRoomWidth <= 10.0f)
-        {
-            // 2m..10m -> 0.7x..1.0x
-            const float t = juce::jlimit(0.0f, 1.0f, (currentRoomWidth - 2.0f) / 8.0f);
-            panScale = 0.7f + t * 0.3f;
-        }
-        else
-        {
-            // 10m..20m+ -> 1.0x..1.3x
-            const float t = juce::jlimit(0.0f, 1.0f, (currentRoomWidth - 10.0f) / 10.0f);
-            panScale = 1.0f + t * 0.3f;
-        }
+        constexpr float refWidth = 6.0f;
+        float panNorm = std::sin(azRad) * (currentRoomWidth / refWidth);
+        panNorm = juce::jlimit(-2.0f, 2.0f, panNorm);
 
-        float roomConstrainedPan = juce::jlimit(-180.0f, 180.0f, panValue * panScale);
+        const float panClamped = juce::jlimit(-1.0f, 1.0f, panNorm);
+        const float gainL = std::sqrt(0.5f * juce::jmax(0.0f, 1.0f - panClamped));
+        const float gainR = std::sqrt(0.5f * juce::jmax(0.0f, 1.0f + panClamped));
 
-        const float roomAwareAzRad = roomConstrainedPan * juce::MathConstants<float>::pi / 180.0f;
-
-        // SMOOTH FRONT/BACK DISTINCTION with room awareness
-        const float frontBackFactor = std::cos(roomAwareAzRad); // +1 = front, -1 = back
-        const bool isRearSource = frontBackFactor < 0.0f;
-        const float frontBackAmount = std::abs(frontBackFactor); // 0 = side, 1 = front/back
-        
-        // ROOM-AWARE HEAD SHADOW FILTERING for rear sources
-        if (isRearSource)
-        {
-            // Calculate head shadow attenuation with room size awareness
-            const float rearAmount = -frontBackFactor; // 0 = side, 1 = directly behind
-            
-            // Room size affects head shadow - larger rooms have more diffuse rear sources
-            float roomAwareShadowIntensity = rearAmount;
-            if (currentRoomLength > 8.0f) {
-                // Large rooms: less intense head shadow (more diffuse)
-                roomAwareShadowIntensity *= 0.6f;
-            } else if (currentRoomLength < 4.0f) {
-                // Small rooms: more intense head shadow (more direct)
-                roomAwareShadowIntensity *= 1.4f;
-            }
-            roomAwareShadowIntensity = juce::jlimit(0.0f, 1.0f, roomAwareShadowIntensity);
-            
-            // Conservative cutoff range with room awareness
-            const float baseCutoff = 12000.0f - roomAwareShadowIntensity * 4000.0f; // 4kHz to 12kHz
-            const float roomAwareCutoff = baseCutoff * (1.0f + (roomSizeFactor - 1.0f) * 0.3f); // Room size affects cutoff
-            const float shadowCutoff = juce::jlimit(4000.0f, 15000.0f, roomAwareCutoff);
-            
-            // Smooth cutoff changes to prevent artifacts
-            smoothedShadowCutoff.setTargetValue(shadowCutoff);
-            const float currentShadowCutoff = smoothedShadowCutoff.getNextValue();
-            
-            // Update head shadow filters only when needed and with smooth transitions
-            if (std::abs(currentShadowCutoff - lastShadowCutoff) > 200.0f) // Less frequent updates
-            {
-                // Very gentle high-shelf reduction with room-aware intensity
-                const float attenuationDb = -2.0f * roomAwareShadowIntensity; // Max -2dB, room-aware
-                auto shadowCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf(sampleRate, currentShadowCutoff, 0.707f, 
-                                                                                       juce::Decibels::decibelsToGain(attenuationDb));
-                *backFilterLeft.coefficients = *shadowCoeffs;
-                *backFilterRight.coefficients = *shadowCoeffs;
-                lastShadowCutoff = currentShadowCutoff;
-            }
-            
-            // Apply gentle head shadow filtering
-            auto* left = buffer.getWritePointer(0);
-            auto* right = buffer.getWritePointer(1);
-            
-            for (int n = 0; n < numSamples; ++n)
-            {
-                left[n] = backFilterLeft.processSample(left[n]);
-                right[n] = backFilterRight.processSample(right[n]);
-            }
-        }
-        
-        // ROOM-AWARE FRONT/BACK SPATIAL PROCESSING
-        // Room size dramatically affects front/back perception
-        
-        // Smooth front/back width changes with room awareness
-        float frontBackWidth = 1.0f;
-        if (isRearSource) {
-            // Back sources: room size affects stereo width
-            float baseWidth = 0.7f + (1.0f - frontBackAmount) * 0.2f; // 0.7x to 0.9x
-            frontBackWidth = baseWidth * roomSizeFactor * 0.8f; // Scale by room size
-        } else {
-            // Front sources: wider stereo image, scaled by room size
-            float baseWidth = 1.0f + frontBackAmount * 0.4f; // 1.0x to 1.4x
-            frontBackWidth = baseWidth * roomSizeFactor * 0.6f; // Scale by room size
-        }
-        
-        // Apply wall proximity effect
-        frontBackWidth *= wallProximityFactor;
-        frontBackWidth = juce::jlimit(0.3f, 2.5f, frontBackWidth);
-        
-        // Smooth width parameter changes to prevent artifacts
-        smoothedFrontBackWidth.setTargetValue(frontBackWidth);
-        
-        // ROOM-AWARE PHASE EFFECTS for back sources
-        float phaseShiftAmount = 0.0f;
-        if (isRearSource) {
-            // Room size affects phase shift intensity
-            float basePhase = frontBackAmount * 0.15f;
-            phaseShiftAmount = basePhase * (2.0f - roomSizeFactor * 0.5f); // Larger rooms = less phase shift
-            phaseShiftAmount = juce::jlimit(0.0f, 0.3f, phaseShiftAmount);
-        }
-        smoothedPhaseShift.setTargetValue(phaseShiftAmount);
-        
-        // ROOM-AWARE BRIGHTNESS CHANGES
-        float brightnessFactor = 1.0f;
-        if (isRearSource) {
-            // Back sources: room size affects brightness reduction
-            float baseBrightness = 0.95f + (1.0f - frontBackAmount) * 0.05f; // 0.95x to 1.0x
-            brightnessFactor = baseBrightness + (roomSizeFactor - 1.0f) * 0.02f; // Larger rooms = brighter
-        } else {
-            // Front sources: room size affects brightness enhancement
-            float baseBrightness = 1.0f + frontBackAmount * 0.05f; // 1.0x to 1.05x
-            brightnessFactor = baseBrightness + (roomSizeFactor - 1.0f) * 0.03f; // Larger rooms = brighter
-        }
-        brightnessFactor = juce::jlimit(0.9f, 1.15f, brightnessFactor);
-        smoothedBrightness.setTargetValue(brightnessFactor);
-        
-        // PROCESS ROOM-AWARE SPATIAL EFFECTS
+        auto* left = buffer.getWritePointer(0);
+        auto* right = buffer.getWritePointer(1);
         for (int n = 0; n < numSamples; ++n)
         {
-            float leftSample = buffer.getSample(0, n);
-            float rightSample = buffer.getSample(1, n);
-            
-            // Apply smooth room-aware front/back stereo width
-            const float currentWidth = smoothedFrontBackWidth.getNextValue();
-            float midSample = (leftSample + rightSample) * 0.5f;
-            float sideSample = (leftSample - rightSample) * 0.5f;
-            sideSample *= currentWidth;
-            
-            // Apply smooth room-aware phase effects for back sources - FIXED artifacts
-            const float currentPhaseShift = smoothedPhaseShift.getNextValue();
-            if (currentPhaseShift > 0.001f) {
-                // SAFE phase accumulation with proper bounds
-                phaseAccumulator += currentPhaseShift * 0.005f; // Even slower accumulation
-                phaseAccumulator = std::fmod(phaseAccumulator, 1.0f); // Safe modulo
-                phaseAccumulator = juce::jlimit(0.0f, 1.0f, phaseAccumulator); // Safety bounds
-                
-                // SAFE phase effect - much more conservative
-                const float safePhaseEffect = phaseAccumulator * 0.05f; // Reduced from 0.1f
-                sideSample = sideSample * (1.0f - safePhaseEffect);
-                sideSample = juce::jlimit(-2.0f, 2.0f, sideSample); // Safety bounds
-            }
-            
-            // Apply smooth room-aware brightness changes
-            const float currentBrightness = smoothedBrightness.getNextValue();
-            leftSample = leftSample * currentBrightness;
-            rightSample = rightSample * currentBrightness;
-            
-            // SAFE stereo reconstruction with bounds checking
-            const float newLeft = juce::jlimit(-2.0f, 2.0f, midSample + sideSample);
-            const float newRight = juce::jlimit(-2.0f, 2.0f, midSample - sideSample);
-            buffer.setSample(0, n, newLeft);
-            buffer.setSample(1, n, newRight);
+            left[n] *= gainL;
+            right[n] *= gainR;
         }
 
-        // ROOM-AWARE ILD/ITD PROCESSING
-        // Inter-aural level difference (ILD) using equal-power law with room scaling
-        const float panNorm = juce::jlimit (-1.0f, 1.0f, std::sin (roomAwareAzRad));
-        float gainL = std::sqrt (0.5f * (1.0f - panNorm));
-        float gainR = std::sqrt (0.5f * (1.0f + panNorm));
-        
-        // Room size affects ILD intensity - larger rooms have more dramatic ILD
-        const float ildIntensity = 0.5f + roomSizeFactor * 0.5f; // 0.5x to 2.0x intensity
-        gainL = juce::jlimit(0.1f, 1.0f, 0.5f + (gainL - 0.5f) * ildIntensity);
-        gainR = juce::jlimit(0.1f, 1.0f, 0.5f + (gainR - 0.5f) * ildIntensity);
-        
-        // Smooth ILD gains to prevent artifacts
-        smoothedIldGainL.setTargetValue(gainL);
-        smoothedIldGainR.setTargetValue(gainR);
-
-        // ROOM-AWARE ITD - Inter-aural time difference with room scaling
-        constexpr float maxITD = 0.0007f; // seconds base ITD
-        const float roomAwareMaxITD = maxITD * (0.8f + roomSizeFactor * 0.4f); // Scale ITD by room size
-        const float itdSec = roomAwareMaxITD * panNorm; // −L lead … +R lead
-
-        const float delayLeftSec  = itdSec < 0.0f ? -itdSec : 0.0f;
-        const float delayRightSec = itdSec > 0.0f ?  itdSec : 0.0f;
-
-        const float delayLeftSamples  = delayLeftSec  * static_cast<float> (sampleRate);
-        const float delayRightSamples = delayRightSec * static_cast<float> (sampleRate);
-
-        // Smooth ITD changes to prevent artifacts
-        smoothedEarDelayLeft.setTargetValue (delayLeftSamples);
-        smoothedEarDelayRight.setTargetValue(delayRightSamples);
-
-        auto* left  = buffer.getWritePointer (0);
-        auto* right = buffer.getWritePointer (1);
-
-        // Process with smooth room-aware ITD + ILD
-        for (int n = 0; n < numSamples; ++n)
-        {
-            const float delayL = smoothedEarDelayLeft.getNextValue();
-            const float delayR = smoothedEarDelayRight.getNextValue();
-            
-            const float currentGainL = smoothedIldGainL.getNextValue();
-            const float currentGainR = smoothedIldGainR.getNextValue();
-
-            // Apply ITD via delay lines
-            earDelayLeft.pushSample (0, left[n]);
-            earDelayRight.pushSample(0, right[n]);
-
-            const float delayedL = earDelayLeft.popSample (0, delayL);
-            const float delayedR = earDelayRight.popSample(0, delayR);
-
-            // Apply smooth room-aware ILD gains
-            left[n]  = delayedL * currentGainL;
-            right[n] = delayedR * currentGainR;
-        }
+        processHrtfConvolution(buffer);
     }
     catch (const std::exception& e) {
         juce::Logger::writeToLog("DistanceProcessor processPanning error: " + juce::String(e.what()));
     }
 }
+
 
 void DistanceProcessor::processLateReverb(float distance, int numSamples, int channels)
 {
