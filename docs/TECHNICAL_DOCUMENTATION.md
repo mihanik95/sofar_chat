@@ -272,7 +272,7 @@ RT60 = 0.161 * roomVolume / (surfaceArea * avgAbsorption)
 - **Room Height**: 2-20 meters  
 - **Room Length**: 2-100 meters
 - **Air Absorption**: 0-100% (subtle high-frequency roll-off)
-- **Volume Compensation**: 0-100% (loudness preservation)
+- **Volume Compensation**: 0-100% (reduces distance attenuation; 100% = no drop-off)
 - **Temperature**: -100°C to +200°C (speed of sound adjustment)
 - **Clarity**: 0-100% (dry/wet mix)
 

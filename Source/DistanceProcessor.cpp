@@ -529,10 +529,13 @@ void DistanceProcessor::processDistanceGain(juce::AudioBuffer<float>& buffer, fl
             finalGain = 1.0f / actualDistance; // linear amplitude, −6 dB per doubling
  
         // Optional volume-compensation curve (0..1)
+        // Instead of forcing the gain toward unity, scale the attenuation
+        // exponent so that higher values reduce the rate at which volume
+        // decreases with distance.
         if (currentVolumeCompensation > 0.0f)
         {
-            const float comp = std::sqrt(currentVolumeCompensation); // gentler curve
-            finalGain = juce::jmap(comp, finalGain, 1.0f);           // blend towards unity
+            const float exponent = 1.0f - juce::jlimit(0.0f, 1.0f, currentVolumeCompensation);
+            finalGain = std::pow(finalGain, exponent);
         }
  
         // Floor at −60 dB to avoid denormals
