@@ -387,8 +387,8 @@ void EarlyReflectionsEngine::configureGeometry(float roomW, float roomL, float r
         
         const float delaySec = dist / c;
         
-        // Realistic gain calculation with distance and absorption
-        float gain = (1.0f - absorption) / (1.0f + dist * dist * 0.1f);
+        // Realistic gain calculation with steeper falloff
+        float gain = (1.0f - absorption) / (1.0f + dist);
         if (isSecondOrder) gain *= 0.3f; // Second-order reflections are weaker
         
         // Apply high-frequency damping based on distance and absorption
@@ -448,12 +448,24 @@ void EarlyReflectionsEngine::configureGeometry(float roomW, float roomL, float r
         float delay = 0.020f + 0.080f * rand01(rng); // 20-100ms range
         float gain = 0.02f * (1.0f - rand01(rng) * 0.7f); // Decreasing gains
         float pan = (rand01(rng) - 0.5f) * 2.0f; // -1 to +1
-        
+
         delayTimes[tap] = delay;
         gains[tap] = gain;
         panPositions[tap] = pan;
         delayLines[tap].setDelay(static_cast<float>(delay * sampleRate));
         ++tap;
+    }
+
+    // Ensure total gain does not exceed unity
+    float totalGain = 0.0f;
+    for (int i = 0; i < MAX_REFLECTIONS; ++i)
+        totalGain += gains[i];
+
+    if (totalGain > 1.0f)
+    {
+        const float norm = 1.0f / totalGain;
+        for (int i = 0; i < MAX_REFLECTIONS; ++i)
+            gains[i] *= norm;
     }
 }
 
