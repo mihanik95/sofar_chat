@@ -2,8 +2,6 @@
 
 #include <JuceHeader.h>
 #include <limits>
-#include "AdvancedReverbEngine.h"
-#include "EarlyReflectionIR.h"
 #include "MySofaHRIR.h"
 
 //==============================================================================
@@ -83,8 +81,6 @@ private:
     void processAirAbsorption(juce::AudioBuffer<float>& buffer, float distance, int numSamples);
     void processStereoWidth(juce::AudioBuffer<float>& buffer, float distance, int numSamples);
     void processPanning(juce::AudioBuffer<float>& buffer, float panValue, int numSamples);
-    void processLateReverb(float distance, int numSamples, int channels);
-    void processPsychoacousticEffects(juce::AudioBuffer<float>& buffer, float distance, int numSamples);
     void processHeightEffects(juce::AudioBuffer<float>& buffer, int numSamples);
     
     void updateEnvironmentParameters(Environment environment);
@@ -139,15 +135,6 @@ private:
     float phaseAccumulator = 0.0f;
     
     //==============================================================================
-    // Advanced Reverb system - Research-based professional algorithms
-    std::unique_ptr<AdvancedReverbEngine> advancedReverb;
-    
-    //==============================================================================
-    // Working buffers
-    juce::AudioBuffer<float> tempBuffer;
-    juce::AudioBuffer<float> psychoBuffer;
-    
-    //==============================================================================
     // Environment and processing state
     Environment currentEnvironment = Generic;
     Environment lastEnvironment = Generic;
@@ -183,8 +170,6 @@ private:
     EnvironmentParams environmentSettings[numEnvironments];
 
     static constexpr float listenerEarHeight = 1.7f; // metres above floor – average ear height when seated/standing
-
-    EarlyReflectionIR earlyReflections;
 
     // HRTF binaural convolution
     MySofaHrirDatabase hrirDatabase;

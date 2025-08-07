@@ -1,5 +1,4 @@
 #include "DistanceProcessor.h"
-#include "AdvancedReverbEngine.h"
 #include <cmath>
 #include <array>
 
@@ -7,14 +6,11 @@
 
 DistanceProcessor::DistanceProcessor()
 {
-    juce::Logger::writeToLog("DistanceProcessor constructor - Advanced Reverb Research version");
-    
+    juce::Logger::writeToLog("DistanceProcessor constructor");
+
     // Initialize environment parameters once
     updateEnvironmentParameters(Generic);
-    
-    // Initialize advanced reverb
-    advancedReverb = std::make_unique<AdvancedReverbEngine>();
-    
+
     // Enable true distance gain and delay for realistic perception
     trueGainEnabled = true;
     trueDelayEnabled = true;
@@ -28,7 +24,6 @@ DistanceProcessor::DistanceProcessor()
     leftPanGain = 0.707f;
     rightPanGain = 0.707f;
     
-    juce::Logger::writeToLog("DistanceProcessor - Advanced reverb engine initialized");
 }
 void DistanceProcessor::prepare(double sampleRate, int samplesPerBlock)
 {
@@ -131,22 +126,6 @@ void DistanceProcessor::prepare(double sampleRate, int samplesPerBlock)
         gainProcessor.reset();
         gainProcessor.prepare(juce::dsp::ProcessSpec{sampleRate, (juce::uint32)samplesPerBlock, 2});
         
-        // Prepare advanced reverb
-        if (advancedReverb)
-        {
-            advancedReverb->prepare(sampleRate, samplesPerBlock);
-        }
-        
-        // Initialize buffers
-        tempBuffer.setSize(2, samplesPerBlock);
-        psychoBuffer.setSize(2, samplesPerBlock);
-        
-        // Prepare early-reflection convolution (mono IR 512 taps default)
-        earlyReflections.prepare (sampleRate, samplesPerBlock, 2);
-
-        // Load unity (Dirac) impulse as placeholder early reflection IR
-        earlyReflections.loadDirac (512, sampleRate);
-        
         // Prepare HRTF convolvers
         juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (samplesPerBlock), 1 };
         hrtfLeft.prepare (spec);
@@ -168,8 +147,6 @@ void DistanceProcessor::prepare(double sampleRate, int samplesPerBlock)
 void DistanceProcessor::reset()
 {
     try {
-        if (advancedReverb)
-            advancedReverb->reset();
         lowPassFilterLeft.reset();
         lowPassFilterRight.reset();
         heightTiltFilterLeft.reset();
@@ -178,8 +155,6 @@ void DistanceProcessor::reset()
         earDelayLeft.reset();
         earDelayRight.reset();
         gainProcessor.reset();
-        tempBuffer.clear();
-        psychoBuffer.clear();
         
         // Reset smoothed values to current values (no sudden jumps)
         smoothedDistance.setCurrentAndTargetValue(smoothedDistance.getCurrentValue());
@@ -382,47 +357,6 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         smoothedPan.setTargetValue(panValue);
         processPanning(buffer, panValue, numSamples);
         
-        // Psychoacoustic effects with smooth scaling - engage immediately
-        if (spatialProcessingAmount > 0.001f) {
-            processPsychoacousticEffects(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
-        }
-        
-        // Early reflections with smooth scaling
-        if (!heavyLoad && spatialProcessingAmount > 0.1f) {
-            earlyReflections.process(buffer);
-        }
-        
-        // ULTRA-SAFE REVERB PROCESSING - Fixed resonance issues
-        // =====================================================
-        if (!heavyLoad && spatialProcessingAmount > 0.1f) {
-            // ULTRA-CONSERVATIVE reverb processing
-            juce::AudioBuffer<float> cleanInput(buffer.getNumChannels(), numSamples);
-            cleanInput.makeCopyOf(buffer, true);
-
-            tempBuffer.makeCopyOf(cleanInput, true);
-            processLateReverb(effectiveDistance * spatialProcessingAmount, numSamples, buffer.getNumChannels());
-            
-            // ULTRA-CONSERVATIVE blend - prevent any resonance
-            const float ultraSafeReverbMix = juce::jlimit(0.0f, 0.1f, spatialProcessingAmount * 0.08f); // Max 8%
-            
-            for (int channel = 0; channel < buffer.getNumChannels() && channel < tempBuffer.getNumChannels(); ++channel) {
-                auto* output = buffer.getWritePointer(channel);
-                const auto* original = cleanInput.getReadPointer(channel);
-                const auto* reverb = tempBuffer.getReadPointer(channel);
-                
-                for (int n = 0; n < numSamples; ++n) {
-                    const float originalSample = original[n];
-                    const float reverbSample = juce::jlimit(-1.0f, 1.0f, reverb[n]); // Limit reverb
-                    
-                    // Ultra-conservative blend
-                    output[n] = originalSample * (1.0f - ultraSafeReverbMix) + reverbSample * ultraSafeReverbMix;
-                    
-                    // Ultra-safe limiting
-                    output[n] = juce::jlimit(-1.2f, 1.2f, output[n]);
-                }
-            }
-        }
-
         // OPTIONAL: Final HRTF convolution with ultra-safe scaling
         if (!heavyLoad && spatialProcessingAmount > 0.2f) {
             juce::AudioBuffer<float> dryCopy(buffer);
@@ -942,194 +876,6 @@ void DistanceProcessor::processPanning(juce::AudioBuffer<float>& buffer, float p
     }
 }
 
-void DistanceProcessor::processLateReverb(float distance, int numSamples, int channels)
-{
-    try {
-        if (!advancedReverb) return;
-        
-        const auto& env = environmentSettings[currentEnvironment];
-        const float actualDistance = distance;
-        
-        // Skip reverb processing at 0 distance to preserve original sound
-        if (actualDistance <= 0.0f) {
-            return;
-        }
-        
-        // ------------------------------------------------------------------
-        // Update early-reflection geometry only when parameters change
-        if (advancedReverb)
-        {
-            const float panDeg = smoothedPan.getCurrentValue();
-            const float panRad = panDeg * juce::MathConstants<float>::pi / 180.0f;
-
-            const float srcX = std::sin(panRad) * actualDistance; // left(+)/right(-)
-            const float srcZ = std::cos(panRad) * actualDistance; // front(+)
-            const float srcY = currentHeightPercent * currentRoomHeight; // metres
-
-            const bool geometryChanged =
-                std::abs(currentRoomWidth  - lastGeomRoomWidth)  > 0.05f ||
-                std::abs(currentRoomLength - lastGeomRoomLength) > 0.05f ||
-                std::abs(currentRoomHeight - lastGeomRoomHeight) > 0.05f ||
-                std::abs(srcX - lastGeomSrcX) > 0.02f ||
-                std::abs(srcY - lastGeomSrcY) > 0.02f ||
-                std::abs(srcZ - lastGeomSrcZ) > 0.02f;
-
-            if (geometryChanged)
-            {
-                advancedReverb->updateRoomGeometry(currentRoomWidth, currentRoomLength, currentRoomHeight,
-                                                   srcX, srcY, srcZ);
-                lastGeomRoomWidth  = currentRoomWidth;
-                lastGeomRoomLength = currentRoomLength;
-                lastGeomRoomHeight = currentRoomHeight;
-                lastGeomSrcX = srcX;
-                lastGeomSrcY = srcY;
-                lastGeomSrcZ = srcZ;
-            }
-        }
-        
-        // DearVR-style distance-dependent reverb characteristics
-        // Closer sources: less reverb, more direct sound
-        // Distant sources: more reverb, less direct sound
-        const float distanceRatio = juce::jlimit(0.0f, 1.0f, actualDistance / currentMaxDistance);
-        
-        // Distance-based reverb level scaling
-        // Close sources (0-2m): minimal reverb
-        // Medium sources (2-10m): moderate reverb  
-        // Distant sources (10m+): full reverb
-        float reverbLevelScale = 1.0f;
-        if (actualDistance < 2.0f)
-        {
-            // Very close sources - minimal reverb
-            reverbLevelScale = 0.1f + (actualDistance / 2.0f) * 0.4f; // 0.1 to 0.5
-        }
-        else if (actualDistance < 10.0f)
-        {
-            // Medium distance - gradual reverb increase
-            reverbLevelScale = 0.5f + ((actualDistance - 2.0f) / 8.0f) * 0.4f; // 0.5 to 0.9
-        }
-        else
-        {
-            // Distant sources - full reverb
-            reverbLevelScale = 0.9f + (juce::jmin(actualDistance - 10.0f, 10.0f) / 10.0f) * 0.1f; // 0.9 to 1.0
-        }
-        
-        // DRAMATIC FRONT/BACK REVERB CHARACTERISTICS
-        // Front sources: more early reflections, less late reverb (more direct)
-        // Back sources: less early reflections, more late reverb (more diffuse)
-        const float panDeg = smoothedPan.getCurrentValue();
-        const float panRad = panDeg * juce::MathConstants<float>::pi / 180.0f;
-        const float frontBackFactor = std::cos(panRad); // +1 = front, -1 = back
-        const bool isRearSource = frontBackFactor < 0.0f;
-        
-        // Distance-based early/late balance with front/back modification
-        float earlyToLateRatio = juce::jlimit(0.2f, 0.8f, 0.8f - distanceRatio * 0.6f);
-        
-        // DRAMATIC front/back modification
-        if (isRearSource) {
-            // Back sources: much more late reverb, less early reflections
-            earlyToLateRatio *= 0.5f; // Reduce early reflections dramatically
-        } else {
-            // Front sources: more early reflections, less late reverb
-            earlyToLateRatio *= 1.3f; // Increase early reflections
-        }
-        earlyToLateRatio = juce::jlimit(0.1f, 0.9f, earlyToLateRatio);
-        
-        const float earlyLevel = env.reverbLevel * reverbLevelScale * earlyToLateRatio;
-        const float lateLevel = env.reverbLevel * reverbLevelScale * (1.0f - earlyToLateRatio);
-        
-        // Distance-based pre-delay (closer sources have shorter pre-delay)
-        const float preDelayScale = juce::jlimit(0.3f, 1.0f, 0.3f + distanceRatio * 0.7f);
-        const float scaledPreDelay = env.preDelay * preDelayScale;
-        
-        // Distance-based diffusion (distant sources more diffuse)
-        const float diffusionScale = juce::jlimit(0.4f, 1.0f, 0.4f + distanceRatio * 0.6f);
-        const float scaledDiffusion = env.diffusion * diffusionScale;
-        
-        // Distance-based decay time (distant sources seem to have longer decay)
-        const float decayScale = juce::jlimit(0.7f, 1.3f, 0.7f + distanceRatio * 0.6f);
-        const float scaledDecayTime = env.decayTime * decayScale;
-        
-        // DRAMATIC ROOM SIZE EFFECTS - Configure reverb based on environment and distance
-        // Room size now has much more dramatic effect on reverb characteristics
-        
-        // Calculate dramatic room size factor
-        const float roomVolume = currentRoomWidth * currentRoomLength * currentRoomHeight;
-        const float roomSizeFactor = juce::jlimit(0.1f, 3.0f, roomVolume / 100.0f); // Normalize to 0.1-3.0 range
-        
-        if (currentEnvironment != lastEnvironment || true) // Always update for room size changes
-        {
-            AdvancedReverbEngine::AlgorithmType algorithm = AdvancedReverbEngine::Hall;
-            AdvancedReverbEngine::ModulationType modulation = AdvancedReverbEngine::RandomMod;
-            
-            // Use a single algorithm (Hall) with moderate modulation
-            algorithm = AdvancedReverbEngine::Hall;
-            modulation = AdvancedReverbEngine::RandomMod;
-            
-            advancedReverb->setAlgorithm(algorithm);
-            advancedReverb->setModulationType(modulation);
-            
-            // DRAMATIC room size effect on reverb size parameter
-            const float dramaticRoomSize = env.roomSize * roomSizeFactor;
-            advancedReverb->setSize(juce::jlimit(0.1f, 1.0f, dramaticRoomSize));
-            
-            lastEnvironment = currentEnvironment;
-        }
-        
-        // Apply distance-dependent parameters - FIXED: Conservative levels to prevent buildup
-        const float safeEarlyLevel = juce::jlimit(0.0f, 0.3f, earlyLevel * roomSizeFactor * 0.2f); // Much more conservative
-        const float safeLateLevel = juce::jlimit(0.0f, 0.4f, lateLevel * roomSizeFactor * 0.3f); // Much more conservative
-        const float safeDecayTime = juce::jlimit(0.1f, 8.0f, scaledDecayTime * juce::jmin(roomSizeFactor, 2.0f)); // Limit decay time
-        
-        advancedReverb->setEarlyLevel(safeEarlyLevel);
-        advancedReverb->setLateLevel(safeLateLevel);
-        advancedReverb->setPreDelay(juce::jlimit(0.0f, 0.1f, scaledPreDelay * juce::jmin(roomSizeFactor, 1.5f))); // Limit pre-delay
-        advancedReverb->setDiffusion(juce::jlimit(0.3f, 0.8f, scaledDiffusion * juce::jmin(roomSizeFactor, 1.2f))); // Limit diffusion
-        advancedReverb->setDecayTime(safeDecayTime); // Use safe decay time
-        advancedReverb->setDamping(juce::jlimit(0.1f, 0.9f, env.damping * juce::jmax(0.5f, 1.0f / roomSizeFactor))); // More damping for stability
-        
-        // Process reverb - FIXED: Clean processing without internal feedback
-        float* leftChannel = tempBuffer.getWritePointer(0);
-        float* rightChannel = tempBuffer.getNumChannels() > 1 ? tempBuffer.getWritePointer(1) : nullptr;
-        
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            // CRITICAL: Read clean input samples
-            const float leftIn = leftChannel[sample];
-            const float rightIn = rightChannel ? rightChannel[sample] : leftIn;
-            
-            float leftOut = 0.0f;
-            float rightOut = 0.0f;
-            
-            // Process through advanced reverb engine
-            advancedReverb->processStereo(leftIn, rightIn, leftOut, rightOut);
-            
-            // CRITICAL: Apply conservative wet/dry mix to prevent buildup
-            const float wetLevel = juce::jlimit(0.0f, 0.6f, distanceRatio * 0.4f + 0.05f); // Much more conservative
-
-            // Energy-preserving wet/dry gains
-            const float dryGain = std::sqrt(juce::jlimit(0.0f, 1.0f, 1.0f - wetLevel));
-            const float wetGain = std::sqrt(wetLevel);
-
-            // CRITICAL: Safety limiting on reverb output
-            leftOut = juce::jlimit(-1.0f, 1.0f, leftOut);
-            rightOut = juce::jlimit(-1.0f, 1.0f, rightOut);
-
-            // Store mixed output with safe levels using energy-preserving mix
-            leftChannel[sample] = leftIn * dryGain + leftOut * wetGain;
-            if (rightChannel)
-                rightChannel[sample] = rightIn * dryGain + rightOut * wetGain;
-
-            // Final safety limiting per sample
-            leftChannel[sample] = juce::jlimit(-1.5f, 1.5f, leftChannel[sample]);
-            if (rightChannel)
-                rightChannel[sample] = juce::jlimit(-1.5f, 1.5f, rightChannel[sample]);
-        }
-    }
-    catch (const std::exception& e) {
-        juce::Logger::writeToLog("DistanceProcessor processLateReverb error: " + juce::String(e.what()));
-    }
-}
-
 void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, int numSamples)
 {
     try {
@@ -1241,82 +987,6 @@ void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, i
     }
 }
 
-void DistanceProcessor::processPsychoacousticEffects(juce::AudioBuffer<float>& buffer, float distance, int numSamples)
-{
-    try {
-        // distance is already in meters, use it directly
-        const float actualDistance = distance;
-
-        // Quick exit for zero distance (perfect transparency)
-        if (actualDistance <= 0.0f || buffer.getNumChannels() < 2)
-            return;
-
-        /*
-            Externalization Booster & Near-field ILD (no new UI parameters)
-            ----------------------------------------------------------------
-            1. Very small cross-feed (<7 %) that grows with distance to mimic
-               early reflections / room leakage – helps move sound outside the head.
-            2. Automatic near-field ILD (<1 m): the ear closest to the source is
-               gently boosted while the far ear is slightly attenuated, providing
-               realistic proximity cues without altering the public parameter set.
-        */
-
-        // Distance-based cross-feed coefficient (0 → 0.07)
-        const float crossfeed = juce::jlimit (0.0f, 0.07f, 0.07f * (1.0f - std::exp (-actualDistance * 0.3f)));
-
-        // Near-field closeness factor (0 at ≥1 m, 1 at 0 m)
-        const float closeness = juce::jlimit (0.0f, 1.0f, 1.0f - actualDistance);
-
-        // Early exit if no effects are necessary
-        if (crossfeed <= 0.0f && closeness <= 0.0f)
-            return;
-
-        // Determine which ear is closer using current smoothed pan value
-        const float panDeg  = smoothedPan.getCurrentValue();
-        const float panRad  = panDeg * juce::MathConstants<float>::pi / 180.0f;
-        const bool rightIsNear = (std::sin (panRad) >= 0.0f);
-
-        // Pre-compute ILD gain factors (max ±3 dB ≈ 1.41x)
-        const float nearBoost = 1.0f + 0.3f * closeness;    // up to +30 % (≈ +2.5 dB)
-        const float farCut   = 1.0f / nearBoost;             // energy compensation
-
-        // Process per-sample (lightweight operations)
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            float left  = buffer.getSample (0, sample);
-            float right = buffer.getSample (1, sample);
-
-            // Cross-feed (use original samples to avoid cumulative bleed)
-            const float newLeft  = left  + crossfeed * right;
-            const float newRight = right + crossfeed * left;
-
-            float procLeft  = newLeft;
-            float procRight = newRight;
-
-            // Apply near-field ILD only when within 1 m
-            if (closeness > 0.0f)
-            {
-                if (rightIsNear)
-                {
-                    procRight *= nearBoost;
-                    procLeft  *= farCut;
-                }
-                else
-                {
-                    procLeft  *= nearBoost;
-                    procRight *= farCut;
-                }
-            }
-
-            buffer.setSample (0, sample, procLeft);
-            buffer.setSample (1, sample, procRight);
-        }
-    }
-    catch (const std::exception& e) {
-        juce::Logger::writeToLog("processPsychoacousticEffects error: " + juce::String (e.what()));
-    }
-}
-
 void DistanceProcessor::updateEnvironmentParameters(Environment /*unused*/)
 {
     // DearVR-style advanced room modeling with frequency-dependent absorption
@@ -1363,32 +1033,6 @@ void DistanceProcessor::updateEnvironmentParameters(Environment /*unused*/)
 
     environmentSettings[Generic] = params;
 
-    // Apply frequency-dependent processing to reverb engine
-    if (advancedReverb)
-    {
-        advancedReverb->setSize(params.roomSize);
-        advancedReverb->setDamping(params.damping);
-        advancedReverb->setDecayTime(params.decayTime);
-        advancedReverb->setDiffusion(params.diffusion);
-        advancedReverb->setPreDelay(params.preDelay);
-        
-        // Set frequency-dependent characteristics
-        // High frequencies decay faster in real rooms
-        const float highCutFreq = juce::jlimit(2000.0f, 20000.0f, 
-                                              20000.0f - currentAirAbsorption * 15000.0f);
-        advancedReverb->setHighCut(highCutFreq);
-        
-        // Low frequencies build up more in larger rooms
-        const float lowCutFreq = juce::jlimit(20.0f, 200.0f, 
-                                             200.0f - params.roomSize * 50.0f);
-        advancedReverb->setLowCut(lowCutFreq);
-        
-        // Adjust early/late balance based on room size
-        const float earlyLevel = juce::jlimit(0.1f, 0.6f, 0.4f - params.roomSize * 0.1f);
-        const float lateLevel = juce::jlimit(0.3f, 0.8f, 0.5f + params.roomSize * 0.1f);
-        advancedReverb->setEarlyLevel(earlyLevel);
-        advancedReverb->setLateLevel(lateLevel);
-    }
 }
 
 void DistanceProcessor::setEnvironmentType(Environment envType)
@@ -1437,12 +1081,6 @@ void DistanceProcessor::setRoomWidth(float roomWidthMeters)
     environmentSettings[currentEnvironment].diffusion = juce::jlimit(0.1f, 1.0f, widthFactor);
     environmentSettings[currentEnvironment].reverbLevel = juce::jlimit(0.05f, 0.5f, widthFactor * 0.2f);
 
-    if (advancedReverb)
-    {
-        advancedReverb->setDiffusion(environmentSettings[currentEnvironment].diffusion);
-        float earlyLevel = juce::jlimit(0.05f, 0.4f, widthFactor * 0.2f);
-        advancedReverb->setEarlyLevel(earlyLevel);
-    }
 }
 
 void DistanceProcessor::setRoomHeight(float roomHeightMeters)
@@ -1465,14 +1103,6 @@ void DistanceProcessor::setRoomHeight(float roomHeightMeters)
     float damping = juce::jlimit(0.2f, 0.8f, 1.0f - (heightFactor * 0.1f));
     environmentSettings[currentEnvironment].damping = damping;
     
-    // Update reverb parameters if reverb is active
-    if (advancedReverb)
-    {
-        advancedReverb->setSize(roomSizeFactor);
-        advancedReverb->setDecayTime(decayTimeFactor);
-        advancedReverb->setPreDelay(preDelay);
-        advancedReverb->setDamping(damping);
-    }
 }
 
 void DistanceProcessor::setRoomLength(float roomLengthMeters)
@@ -1487,20 +1117,6 @@ void DistanceProcessor::setRoomLength(float roomLengthMeters)
     
     // DRAMATIC frequency response - longer rooms have more low-end buildup
     
-    // Update reverb parameters if reverb is active
-    if (advancedReverb)
-    {
-        advancedReverb->setSize(environmentSettings[currentEnvironment].roomSize);
-        advancedReverb->setLateLevel(lateReverbLevel);
-        
-        // Set early reflections pattern based on length
-        if (lengthFactor > 2.0f)
-            advancedReverb->setEarlyLevel(0.3f);
-        else if (lengthFactor > 1.0f)
-            advancedReverb->setEarlyLevel(0.2f);
-        else
-            advancedReverb->setEarlyLevel(0.1f);
-    }
 }
 
 void DistanceProcessor::setTemperature(float temperatureCelsius)
@@ -1510,28 +1126,10 @@ void DistanceProcessor::setTemperature(float temperatureCelsius)
     float adjustedSpeedOfSound = 331.3f * std::sqrt(1.0f + currentTemperature / 273.15f);
     speedOfSound = juce::jlimit(330.0f, 360.0f, adjustedSpeedOfSound);
     
-    // Temperature also affects reverb characteristics for additional effect
-    if (advancedReverb)
-    {
-        // Cold air → slightly darker; hot air → slightly brighter
-        float temperatureNorm  = juce::jlimit(-1.0f, 1.0f, currentTemperature / 50.0f); // −1..+1 for −50..50 °C
-
-        const float baseHighCut = 15000.0f;
-        float  highCutShift     = temperatureNorm * 5000.0f; // ±5 kHz
-        float  newHighCut       = juce::jlimit(5000.0f, 20000.0f, baseHighCut + highCutShift);
-
-        advancedReverb->setHighCut(newHighCut);
-
-        // Mild damping variation
-        float tempDamping = juce::jlimit(0.2f, 0.8f, 0.7f - temperatureNorm * 0.2f);
-        environmentSettings[currentEnvironment].damping = tempDamping;
-        advancedReverb->setDamping(tempDamping);
-
-        // Slight wet level variation
-        float baselineLate = environmentSettings[currentEnvironment].reverbLevel;
-        float tempWetMult  = juce::jlimit(0.5f, 1.5f, 1.0f + temperatureNorm * 0.5f);
-        advancedReverb->setLateLevel(juce::jlimit(0.0f, 1.0f, baselineLate * tempWetMult));
-    }
+    // Temperature also affects damping characteristics
+    float temperatureNorm  = juce::jlimit(-1.0f, 1.0f, currentTemperature / 50.0f); // −1..+1 for −50..50 °C
+    float tempDamping = juce::jlimit(0.2f, 0.8f, 0.7f - temperatureNorm * 0.2f);
+    environmentSettings[currentEnvironment].damping = tempDamping;
 }
 
 void DistanceProcessor::setSourceHeight(float heightPercent)
