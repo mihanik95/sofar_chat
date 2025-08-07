@@ -530,11 +530,11 @@ void DistanceProcessor::processDistanceGain(juce::AudioBuffer<float>& buffer, fl
             return;
         }
  
-        float finalGain = 1.0f;
- 
-        // 1 / d law beyond 1 m, unity within 1 m (no boosting)
-        if (actualDistance > 1.0f)
-            finalGain = 1.0f / actualDistance; // linear amplitude, −6 dB per doubling
+        // Map distance to gain with a smooth transition over the first meter
+        // Start at unity (0 m) and reach the 1/d law by 1 m to avoid abrupt drops
+        const float inverseDistance = 1.0f / juce::jmax(1.0f, actualDistance);
+        const float ramp = juce::jlimit(0.0f, 1.0f, actualDistance); // 0..1 over first meter
+        float finalGain = juce::jmap(ramp, 0.0f, 1.0f, 1.0f, inverseDistance);
  
         // Optional volume-compensation curve (0..1)
         // Instead of forcing the gain toward unity, scale the attenuation
