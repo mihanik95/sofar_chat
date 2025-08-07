@@ -362,8 +362,11 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
                 const float widthValue = smoothedStereoWidth.getNextValue();
                 const float processedSide = sideSample * widthValue;
 
-                const float newLeft  = juce::jlimit(-2.0f, 2.0f, midSample + processedSide);
-                const float newRight = juce::jlimit(-2.0f, 2.0f, midSample - processedSide);
+                // Normalise output to avoid perceived loudness changes
+                const float norm = 1.0f / juce::jmax(1.0f, std::sqrt((widthValue * widthValue + 1.0f) * 0.5f));
+
+                const float newLeft  = juce::jlimit(-2.0f, 2.0f, (midSample + processedSide) * norm);
+                const float newRight = juce::jlimit(-2.0f, 2.0f, (midSample - processedSide) * norm);
 
                 buffer.setSample(0, n, newLeft);
                 buffer.setSample(1, n, newRight);
@@ -666,11 +669,14 @@ void DistanceProcessor::processStereoWidth(juce::AudioBuffer<float>& buffer, flo
             
             // Apply width factor with gentle scaling
             sideSample *= currentWidth;
-            
-            // Convert back to Left/Right
-            float newLeftSample = midSample + sideSample;
-            float newRightSample = midSample - sideSample;
-            
+
+            // Normalise to prevent width changes altering level
+            const float norm = 1.0f / juce::jmax(1.0f, std::sqrt((currentWidth * currentWidth + 1.0f) * 0.5f));
+
+            // Convert back to Left/Right and apply normalisation
+            float newLeftSample = (midSample + sideSample) * norm;
+            float newRightSample = (midSample - sideSample) * norm;
+
             // Set the processed samples
             buffer.setSample(0, sample, newLeftSample);
             buffer.setSample(1, sample, newRightSample);
