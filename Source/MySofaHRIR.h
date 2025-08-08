@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <vector>
 
 /**
  * Simplified HRIR Database for spatial audio processing
@@ -12,49 +13,68 @@ public:
     MySofaHrirDatabase() = default;
     ~MySofaHrirDatabase() = default;
 
-    bool isLoaded() const { return true; } // Simplified - always "loaded"
+    bool isLoaded() const { return sofaLoaded; }
 
-    bool loadSofaFile(const juce::String& filepath)
+    bool loadSofaFile (const juce::String& filepath)
     {
-        // In production would load actual SOFA file
-        // For now just return success
-        return true;
+        // We do not parse the SOFA content here, but verifying that the file
+        // exists gives immediate feedback to the caller. Real loading can be
+        // added later without changing the interface.
+        sofaLoaded = juce::File (filepath).existsAsFile();
+        return sofaLoaded;
     }
+
+    void setSampleRate (double newRate) { sampleRate = newRate; }
 
     struct HrirData
     {
-        std::vector<float> left;   // Changed from leftIR
-        std::vector<float> right;  // Changed from rightIR
+        std::vector<float> left;
+        std::vector<float> right;
     };
 
-    HrirData getNearestHrir(float azimuth, float elevation)
+    HrirData getNearestHrir (float azimuth, float elevation)
     {
         HrirData data;
-        getHrir(azimuth, elevation, data.left, data.right);
+        getHrir (azimuth, elevation, data.left, data.right);
         return data;
     }
 
-    void getHrir(float azimuth, float elevation, 
-                 std::vector<float>& leftIR, 
-                 std::vector<float>& rightIR)
+    /**
+     * Very small spherical head model. Generates a pair of impulses with inter
+     * aural time and level differences derived from the azimuth. Elevation is
+     * currently ignored but kept for API compatibility.
+     */
+    void getHrir (float azimuth, float elevation,
+                  std::vector<float>& leftIR,
+                  std::vector<float>& rightIR)
     {
-        // Simplified HRIR - just return dummy impulse responses
-        // In production, this would interpolate from actual HRIR measurements
-        const int irLength = 128;
-        leftIR.resize(irLength);
-        rightIR.resize(irLength);
-        
-        // Simple impulse based on angle
-        float delay = (azimuth / 180.0f) * 0.001f; // Simple ITD model
-        int delaySamples = static_cast<int>(delay * 44100.0f);
-        
-        if (delaySamples < irLength)
-        {
-            leftIR[delaySamples] = azimuth < 0 ? 0.8f : 0.6f;
-            rightIR[delaySamples] = azimuth > 0 ? 0.8f : 0.6f;
-        }
+        juce::ignoreUnused (elevation);
+
+        const int irLength = 64;
+        leftIR.assign  (irLength, 0.0f);
+        rightIR.assign (irLength, 0.0f);
+
+        const float azRad = juce::degreesToRadians (azimuth);
+        const float headRadius = 0.0875f;         // metres
+        const float c = 343.0f;                   // speed of sound
+
+        const float itdSeconds = headRadius / c * std::sin (azRad);
+        const int itdSamples = static_cast<int> (std::round (std::abs (itdSeconds) * sampleRate));
+
+        int leftIndex  = itdSeconds > 0 ? 0 : itdSamples;
+        int rightIndex = itdSeconds > 0 ? itdSamples : 0;
+
+        const float ildDb = -6.0f * std::sin (azRad); // crude ILD estimate
+        const float leftGain  = juce::Decibels::decibelsToGain (ildDb * 0.5f);
+        const float rightGain = juce::Decibels::decibelsToGain (-ildDb * 0.5f);
+
+        if (leftIndex < irLength)  leftIR[leftIndex]  = leftGain;
+        if (rightIndex < irLength) rightIR[rightIndex] = rightGain;
     }
 
 private:
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MySofaHrirDatabase)
+    double sampleRate { 44100.0 };
+    bool   sofaLoaded { false };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MySofaHrirDatabase)
 };

@@ -6,30 +6,29 @@
 
 DistanceProcessor::DistanceProcessor()
 {
-    juce::Logger::writeToLog("DistanceProcessor constructor");
+    juce::Logger::writeToLog ("DistanceProcessor constructor");
 
-    // Initialize environment parameters once
-    updateEnvironmentParameters(Generic);
+    currentEnvironment = Room;
+    lastEnvironment    = Room;
+    updateEnvironmentParameters (Room);
 
-    // Enable true distance gain and delay for realistic perception
-    trueGainEnabled = true;
+    trueGainEnabled  = true;
     trueDelayEnabled = true;
-    
-    // Initialize other parameters
-    currentEnvironment = Generic;
-    lastEnvironment = Generic;
+
     currentDistance = 0.0f;
-    currentPan = 0.0f;
-    sampleRate = 44100.0;
-    leftPanGain = 0.707f;
+    currentPan      = 0.0f;
+    sampleRate      = 44100.0;
+    leftPanGain  = 0.707f;
     rightPanGain = 0.707f;
-    
 }
 void DistanceProcessor::prepare(double sampleRate, int samplesPerBlock)
 {
     try {
         this->sampleRate = sampleRate;
         this->samplesPerBlock = samplesPerBlock;
+        hrirDatabase.setSampleRate (sampleRate);
+        earlyReflection.prepare (sampleRate, samplesPerBlock, 2);
+        hrtfTempBuffer.setSize (2, samplesPerBlock);
         
         // Initialize parameter smoothing with optimized times to prevent artifacts
         smoothedDistance.reset(sampleRate, 0.010);  // 10ms smoothing time - balanced responsiveness
@@ -146,57 +145,44 @@ void DistanceProcessor::prepare(double sampleRate, int samplesPerBlock)
 
 void DistanceProcessor::reset()
 {
-    try {
-        lowPassFilterLeft.reset();
-        lowPassFilterRight.reset();
-        heightTiltFilterLeft.reset();
-        heightTiltFilterRight.reset();
-        delayLine.reset();
-        earDelayLeft.reset();
-        earDelayRight.reset();
-        gainProcessor.reset();
-        
-        // Reset smoothed values to current values (no sudden jumps)
-        smoothedDistance.setCurrentAndTargetValue(smoothedDistance.getCurrentValue());
-        smoothedPan.setCurrentAndTargetValue(smoothedPan.getCurrentValue());
-        smoothedGain.setCurrentAndTargetValue(smoothedGain.getCurrentValue());
-        smoothedCutoffFreq.setCurrentAndTargetValue(smoothedCutoffFreq.getCurrentValue());
-        smoothedLeftPanGain.setCurrentAndTargetValue(smoothedLeftPanGain.getCurrentValue());
-        smoothedRightPanGain.setCurrentAndTargetValue(smoothedRightPanGain.getCurrentValue());
-        smoothedDelayTime.setCurrentAndTargetValue(smoothedDelayTime.getCurrentValue());
-        
-        juce::Logger::writeToLog("DistanceProcessor reset");
-    }
-    catch (const std::exception& e) {
-        juce::Logger::writeToLog("DistanceProcessor reset error: " + juce::String(e.what()));
-    }
+    lowPassFilterLeft.reset();
+    lowPassFilterRight.reset();
+    heightTiltFilterLeft.reset();
+    heightTiltFilterRight.reset();
+    delayLine.reset();
+    earDelayLeft.reset();
+    earDelayRight.reset();
+    gainProcessor.reset();
+    earlyReflection.reset();
+
+    smoothedDistance.setCurrentAndTargetValue (smoothedDistance.getCurrentValue());
+    smoothedPan.setCurrentAndTargetValue (smoothedPan.getCurrentValue());
+    smoothedGain.setCurrentAndTargetValue (smoothedGain.getCurrentValue());
+    smoothedCutoffFreq.setCurrentAndTargetValue (smoothedCutoffFreq.getCurrentValue());
+    smoothedLeftPanGain.setCurrentAndTargetValue (smoothedLeftPanGain.getCurrentValue());
+    smoothedRightPanGain.setCurrentAndTargetValue (smoothedRightPanGain.getCurrentValue());
+    smoothedDelayTime.setCurrentAndTargetValue (smoothedDelayTime.getCurrentValue());
+
+    juce::Logger::writeToLog ("DistanceProcessor reset");
 }
 
-void DistanceProcessor::processBlock(juce::AudioBuffer<float>& buffer, float distance, float panValue, Environment environment)
+void DistanceProcessor::processBlock (juce::AudioBuffer<float>& buffer, float distance, float panValue, Environment environment)
 {
-    try {
-        const int numSamples = buffer.getNumSamples();
-        const int numChannels = buffer.getNumChannels();
-        
-        if (numSamples <= 0 || numChannels <= 0) return;
-        
-        // Set target values for tracking (but use actual values for processing)
-        smoothedDistance.setTargetValue(distance);
-        smoothedPan.setTargetValue(panValue);
-        smoothedClarity.setTargetValue(currentClarity);
-        
-        // Process effects with immediate response
-        processDistanceEffects(buffer, distance, panValue, numSamples);
-        
-    }
-    catch (const std::exception& e) {
-        juce::Logger::writeToLog("DistanceProcessor::processBlock error: " + juce::String(e.what()));
-    }
+    const int numSamples  = buffer.getNumSamples();
+    const int numChannels = buffer.getNumChannels();
+
+    if (numSamples <= 0 || numChannels <= 0)
+        return;
+
+    smoothedDistance.setTargetValue (distance);
+    smoothedPan.setTargetValue (panValue);
+    smoothedClarity.setTargetValue (currentClarity);
+
+    processDistanceEffects (buffer, distance, panValue, numSamples);
 }
 
 void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer, float distance, float panValue, int numSamples)
 {
-    try {
         // PERFECT TRANSPARENCY - Completely fixed 0% to 1% jump
         // =====================================================
         
@@ -298,10 +284,12 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         }
 
         // Air absorption with smooth scaling - engage immediately with tiny threshold
-        if (spatialProcessingAmount > 0.001f) {
+        if (spatialProcessingAmount > 0.001f)
             processAirAbsorption(buffer, effectiveDistance * spatialProcessingAmount, numSamples);
-        }
-        
+
+        // Early reflections
+        earlyReflection.process (buffer);
+
         // ROOM WIDTH PERCEPTION - smooth and continuous
         // =====================================================
 
@@ -356,30 +344,25 @@ void DistanceProcessor::processDistanceEffects(juce::AudioBuffer<float>& buffer,
         // SAFE ROOM-CONNECTED PANNING - Improved artifact elimination
         smoothedPan.setTargetValue(panValue);
         processPanning(buffer, panValue, numSamples);
-        
-        // OPTIONAL: Final HRTF convolution with ultra-safe scaling
-        if (!heavyLoad && spatialProcessingAmount > 0.2f) {
-            juce::AudioBuffer<float> dryCopy(buffer);
-            processHrtfConvolution(buffer);
 
-            // Ultra-conservative HRTF blend
+        // OPTIONAL: Final HRTF convolution with ultra-safe scaling
+        if (!heavyLoad && spatialProcessingAmount > 0.2f)
+        {
+            hrtfTempBuffer.makeCopyOf (buffer);
+            processHrtfConvolution (hrtfTempBuffer);
+
             const float ultraSafeHrtfAmount = spatialProcessingAmount * 0.3f; // Max 30%
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
-                float* wet = buffer.getWritePointer(ch);
-                const float* dry = dryCopy.getReadPointer(ch);
-                for (int n = 0; n < numSamples; ++n) {
-                    wet[n] = wet[n] * ultraSafeHrtfAmount + dry[n] * (1.0f - ultraSafeHrtfAmount);
-                    wet[n] = juce::jlimit(-1.2f, 1.2f, wet[n]); // Final safety limiting
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            {
+                float* dry = buffer.getWritePointer (ch);
+                const float* wet = hrtfTempBuffer.getReadPointer (ch);
+                for (int n = 0; n < numSamples; ++n)
+                {
+                    float mixed = wet[n] * ultraSafeHrtfAmount + dry[n] * (1.0f - ultraSafeHrtfAmount);
+                    dry[n] = juce::jlimit (-1.2f, 1.2f, mixed);
                 }
             }
         }
-        
-    }
-    catch (const std::exception& e) {
-        juce::Logger::writeToLog("processDistanceEffects error: " + juce::String(e.what()));
-        // Clear buffer on error to prevent artifacts
-        buffer.clear();
-    }
 }
 
 void DistanceProcessor::processDelayEffect(juce::AudioBuffer<float>& buffer, float distance, int numSamples)
@@ -987,63 +970,62 @@ void DistanceProcessor::processHeightEffects(juce::AudioBuffer<float>& buffer, i
     }
 }
 
-void DistanceProcessor::updateEnvironmentParameters(Environment /*unused*/)
+void DistanceProcessor::updateEnvironmentParameters (Environment env)
 {
-    // DearVR-style advanced room modeling with frequency-dependent absorption
-    EnvironmentParams params;
-    
+    EnvironmentParams params{};
+
     // Calculate room volume and surface area for realistic acoustics
-    const float roomVolume = currentRoomWidth * currentRoomLength * currentRoomHeight;
-    const float surfaceArea = 2.0f * (currentRoomWidth * currentRoomLength + 
-                                     currentRoomWidth * currentRoomHeight + 
+    const float roomVolume  = currentRoomWidth * currentRoomLength * currentRoomHeight;
+    const float surfaceArea = 2.0f * (currentRoomWidth * currentRoomLength +
+                                     currentRoomWidth * currentRoomHeight +
                                      currentRoomLength * currentRoomHeight);
-    
-    // Realistic RT60 calculation using Sabine's formula
-    // RT60 = 0.161 * V / (A * α) where V = volume, A = surface area, α = absorption
-    const float avgAbsorption = 0.1f + currentAirAbsorption * 0.4f; // 0.1 to 0.5 range
-    const float rt60 = 0.161f * roomVolume / (surfaceArea * avgAbsorption);
-    
-    // Room size factor based on volume (more realistic than simple average)
-    params.roomSize = juce::jlimit(0.1f, 4.0f, std::pow(roomVolume / 150.0f, 0.33f)); // Cube root scaling
-    
-    // Decay time based on RT60 calculation
-    params.decayTime = juce::jlimit(0.2f, 8.0f, rt60);
-    
-    // Frequency-dependent damping (HF absorbed more than LF)
-    // Higher frequencies are absorbed more by air and materials
+
+    const float avgAbsorption = 0.1f + currentAirAbsorption * 0.4f; // 0.1 .. 0.5
+    const float rt60 = 0.161f * roomVolume / juce::jmax (0.0001f, surfaceArea * avgAbsorption);
+
+    params.roomSize = juce::jlimit (0.1f, 4.0f, std::pow (roomVolume / 150.0f, 0.33f));
+    params.decayTime = juce::jlimit (0.2f, 8.0f, rt60);
+
     const float hfAbsorption = avgAbsorption * (1.0f + currentAirAbsorption * 2.0f);
-    params.damping = juce::jlimit(0.02f, 0.95f, hfAbsorption);
-    
-    // Reverb level based on room acoustics (larger, less absorptive rooms = more reverb)
+    params.damping = juce::jlimit (0.02f, 0.95f, hfAbsorption);
+
     const float reverbFactor = (1.0f - avgAbsorption) * params.roomSize * 0.15f;
-    params.reverbLevel = juce::jlimit(0.0f, 0.4f, reverbFactor);
-    
-    // Pre-delay based on room dimensions (time for first reflection)
-    const float maxDimension = juce::jmax(currentRoomWidth, currentRoomLength, currentRoomHeight);
-    params.preDelay = juce::jlimit(1.0f, 100.0f, maxDimension * 2.9f); // Speed of sound factor
-    
-    // Diffusion based on room shape (more square = more diffuse)
-    const float aspectRatio = juce::jmax(currentRoomWidth, currentRoomLength) / 
-                             juce::jmin(currentRoomWidth, currentRoomLength);
-    params.diffusion = juce::jlimit(0.1f, 1.0f, 1.0f / aspectRatio);
-    
-    // Store calculated parameters
+    params.reverbLevel = juce::jlimit (0.0f, 0.4f, reverbFactor);
+
+    const float maxDimension = juce::jmax (currentRoomWidth, currentRoomLength, currentRoomHeight);
+    params.preDelay = juce::jlimit (1.0f, 100.0f, maxDimension * 2.9f);
+
+    const float aspectRatio = juce::jmax (currentRoomWidth, currentRoomLength) /
+                              juce::jmin (currentRoomWidth, currentRoomLength);
+    params.diffusion = juce::jlimit (0.1f, 1.0f, 1.0f / aspectRatio);
+
     params.airAbsorptionCoeff = currentAirAbsorption;
-    params.maxDistance = currentMaxDistance;
+    params.maxDistance        = currentMaxDistance;
 
-    environmentSettings[Generic] = params;
-
+    environmentSettings[env] = params;
 }
 
-void DistanceProcessor::setEnvironmentType(Environment envType)
+void DistanceProcessor::setEnvironmentType (Environment envType)
 {
-    juce::ignoreUnused(envType);
+    envType = static_cast<Environment> (juce::jlimit (0, numEnvironments - 1, (int) envType));
+    currentEnvironment = envType;
+
+    switch (envType)
+    {
+        case Room:   currentRoomWidth = 6.0f;  currentRoomHeight = 3.0f;  currentRoomLength = 8.0f;  currentMaxDistance = 20.0f; currentAirAbsorption = 0.3f; break;
+        case Studio: currentRoomWidth = 8.0f;  currentRoomHeight = 3.0f;  currentRoomLength = 10.0f; currentMaxDistance = 25.0f; currentAirAbsorption = 0.2f; break;
+        case Hall:   currentRoomWidth = 20.0f; currentRoomHeight = 10.0f; currentRoomLength = 30.0f; currentMaxDistance = 60.0f; currentAirAbsorption = 0.1f; break;
+        case Cave:   currentRoomWidth = 15.0f; currentRoomHeight = 6.0f;  currentRoomLength = 25.0f; currentMaxDistance = 40.0f; currentAirAbsorption = 0.05f; break;
+        default:     break;
+    }
+
+    earlyReflection.setRoomDimensions (currentRoomWidth, currentRoomHeight, currentRoomLength);
+    updateEnvironmentParameters (envType);
 }
 
-float DistanceProcessor::getMaxDistanceForEnvironment(Environment envType) const
+float DistanceProcessor::getMaxDistanceForEnvironment (Environment envType) const
 {
-    juce::ignoreUnused(envType);
-    return currentMaxDistance;
+    return environmentSettings[envType].maxDistance;
 }
 
 //==============================================================================
@@ -1078,9 +1060,9 @@ void DistanceProcessor::setRoomWidth(float roomWidthMeters)
 
     float widthFactor = juce::jlimit(0.5f, 1.5f, currentRoomWidth / 6.0f);
 
-    environmentSettings[currentEnvironment].diffusion = juce::jlimit(0.1f, 1.0f, widthFactor);
+    environmentSettings[currentEnvironment].diffusion   = juce::jlimit(0.1f, 1.0f, widthFactor);
     environmentSettings[currentEnvironment].reverbLevel = juce::jlimit(0.05f, 0.5f, widthFactor * 0.2f);
-
+    earlyReflection.setRoomDimensions (currentRoomWidth, currentRoomHeight, currentRoomLength);
 }
 
 void DistanceProcessor::setRoomHeight(float roomHeightMeters)
@@ -1102,7 +1084,8 @@ void DistanceProcessor::setRoomHeight(float roomHeightMeters)
 
     float damping = juce::jlimit(0.2f, 0.8f, 1.0f - (heightFactor * 0.1f));
     environmentSettings[currentEnvironment].damping = damping;
-    
+
+    earlyReflection.setRoomDimensions (currentRoomWidth, currentRoomHeight, currentRoomLength);
 }
 
 void DistanceProcessor::setRoomLength(float roomLengthMeters)
@@ -1112,11 +1095,13 @@ void DistanceProcessor::setRoomLength(float roomLengthMeters)
     float lengthFactor = juce::jlimit(0.5f, 3.0f, currentRoomLength / 10.0f);
     float sizeMultiplier = juce::jlimit(0.7f, 1.5f, lengthFactor);
     environmentSettings[currentEnvironment].roomSize *= sizeMultiplier;
-    
+
     float lateReverbLevel = juce::jlimit(0.1f, 0.6f, lengthFactor * 0.1f);
-    
+
     // DRAMATIC frequency response - longer rooms have more low-end buildup
-    
+
+    environmentSettings[currentEnvironment].reverbLevel = juce::jmax(environmentSettings[currentEnvironment].reverbLevel, lateReverbLevel);
+    earlyReflection.setRoomDimensions (currentRoomWidth, currentRoomHeight, currentRoomLength);
 }
 
 void DistanceProcessor::setTemperature(float temperatureCelsius)
@@ -1230,10 +1215,6 @@ void DistanceProcessor::processHrtfConvolution(juce::AudioBuffer<float>& buffer)
 {
     // DearVR-style HRTF processing with subtle crosstalk cancellation
     juce::dsp::AudioBlock<float> block (buffer);
-    
-    // Store original for crosstalk cancellation
-    juce::AudioBuffer<float> originalBuffer;
-    originalBuffer.makeCopyOf(buffer);
     
     // Process left channel
     auto blockL = block.getSingleChannelBlock (0);

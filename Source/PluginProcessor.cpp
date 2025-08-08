@@ -215,7 +215,8 @@ void SOFARAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         distanceProcessor.setSourceHeight(heightPct);
         
         // Process with actual distance in meters (not percentage)
-        distanceProcessor.processBlock(buffer, actualDistance, panning, DistanceProcessor::Generic);
+        auto env = static_cast<DistanceProcessor::Environment> (currentRoomType);
+        distanceProcessor.processBlock(buffer, actualDistance, panning, env);
         
     } catch (const std::exception& e) {
         juce::Logger::writeToLog("Exception in processBlock: " + juce::String(e.what()));
@@ -280,7 +281,7 @@ void SOFARAudioProcessor::setStateInformation (const void* data, int sizeInBytes
             if (newState.hasProperty("roomType"))
             {
                 int roomType = newState.getProperty("roomType", 0);
-                setRoomType(juce::jlimit(0, 4, roomType)); // Validate range (5 room types: 0-4)
+                setRoomType(juce::jlimit(0, DistanceProcessor::numEnvironments - 1, roomType));
             }
         }
         
@@ -295,7 +296,8 @@ void SOFARAudioProcessor::setStateInformation (const void* data, int sizeInBytes
 // Optimized room type management
 void SOFARAudioProcessor::setRoomType(int roomType)
 {
-    juce::ignoreUnused(roomType);
+    currentRoomType = juce::jlimit(0, DistanceProcessor::numEnvironments - 1, roomType);
+    distanceProcessor.setEnvironmentType (static_cast<DistanceProcessor::Environment>(currentRoomType));
 }
 
 int SOFARAudioProcessor::getCurrentRoomType() const
