@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <limits>
 #include "MySofaHRIR.h"
+#include "EarlyReflectionIR.h"
 
 //==============================================================================
 /**
@@ -15,10 +16,13 @@ class DistanceProcessor
 {
 public:
     //==============================================================================
-    // Environment types - reduced to 4 realistic room types
+    // Environment types
     enum Environment
     {
-        Generic = 0,
+        Room = 0,
+        Studio,
+        Hall,
+        Cave,
         numEnvironments
     };
     
@@ -136,8 +140,8 @@ private:
     
     //==============================================================================
     // Environment and processing state
-    Environment currentEnvironment = Generic;
-    Environment lastEnvironment = Generic;
+    Environment currentEnvironment = Room;
+    Environment lastEnvironment = Room;
     float currentDistance = 0.0f;
     float currentPan = 0.0f;
     float leftPanGain = 0.707f;
@@ -171,10 +175,14 @@ private:
 
     static constexpr float listenerEarHeight = 1.7f; // metres above floor – average ear height when seated/standing
 
+    // Early reflection processor
+    EarlyReflectionIR earlyReflection;
+
     // HRTF binaural convolution
     MySofaHrirDatabase hrirDatabase;
     juce::dsp::Convolution hrtfLeft { juce::dsp::Convolution::NonUniform { 128 } };
     juce::dsp::Convolution hrtfRight{ juce::dsp::Convolution::NonUniform { 128 } };
+    juce::AudioBuffer<float> hrtfTempBuffer;
     float lastAzimuthDeg = 0.0f, lastElevationDeg = 0.0f;
 
     // Cache last geometry state to avoid expensive updates each block
